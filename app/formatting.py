@@ -1,0 +1,156 @@
+"""Amount formatting and pinned summary message rendering."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+from app import copy
+from app.config import Config
+from app.db import Disclosure, Member
+
+
+def format_money(amount: float, currency: str) -> str:
+    currency = currency.upper()
+    m = amount / 1_000_000
+    k = amount / 1000
+    if amount >= 1_000_000 and abs(m - round(m, 2)) < 1e-9:
+        body = f"{round(m, 2):g}m"
+    elif amount >= 1000 and abs(k - round(k)) < 1e-9:
+        body = f"{int(round(k))}k"
+    elif amount >= 1000 and abs(k - round(k, 1)) < 1e-9:
+        body = f"{round(k, 1):.1f}k"
+    elif amount == int(amount):
+        body = f"{amount:,.0f}"
+    else:
+        body = f"{amount:,.2f}"
+
+    if currency == "AUD":
+        return f"${body}"
+    return f"{currency} {body}"
+
+
+def format_money_with_aud(
+    amount: float, currency: str, amount_aud: float | None
+) -> str:
+    currency = currency.upper()
+    local = format_money(amount, currency)
+    if currency == "AUD" or amount_aud is None:
+        return local
+    aud = format_money(amount_aud, "AUD")
+    aud_paren = aud.replace("$", "A$", 1)
+    return f"{local} (~{aud_paren})"
+
+
+def format_super(disclosure: Disclosure, au_super_pct: float) -> str:
+    if disclosure.super_type == "on_top_legislated":
+        return f"{au_super_pct:g}% super"
+    if disclosure.super_type == "included":
+        return "super (included)"
+    if disclosure.super_type == "custom_pct":
+        pct = disclosure.super_pct if disclosure.super_pct is not None else au_super_pct
+        return f"{pct:g}% super"
+    return "no super"
+
+
+def format_bonus(disclosure: Disclosure) -> str:
+    if disclosure.bonus_type == "none":
+        text = "no bonus"
+    elif disclosure.bonus_type == "pct_of_base":
+        pct = disclosure.bonus_value or 0
+        text = f"{pct:g}% bonus"
+    else:
+        currency = disclosure.bonus_currency or disclosure.base_currency
+        text = (
+            format_money_with_aud(
+                disclosure.bonus_value or 0, currency, disclosure.bonus_aud
+            )
+            + " bonus"
+        )
+
+    if disclosure.bonus_note:
+        text = f"{text} ({disclosure.bonus_note})"
+    return text
+
+
+def format_rsu(disclosure: Disclosure) -> str:
+    if disclosure.rsu_type == "none":
+        text = "$0 stock"
+    elif disclosure.rsu_type == "public":
+        shares = disclosure.rsu_shares_per_year or 0
+        if shares == int(shares):
+            shares_text = f"{int(shares)}"
+        else:
+            shares_text = f"{shares:g}"
+        ticker = disclosure.rsu_ticker or "?"
+        if disclosure.rsu_aud is not None:
+            aud = format_money(disclosure.rsu_aud, "AUD").replace("$", "A$", 1)
+            text = f"{shares_text} {ticker} sh/yr (~{aud}/yr)"
+        else:
+            text = f"{shares_text} {ticker} sh/yr"
+    else:
+        # private
+        currency = disclosure.rsu_currency or disclosure.base_currency
+        text = (
+            format_money_with_aud(
+                disclosure.rsu_amount or 0, currency, disclosure.rsu_aud
+            )
+            + "/yr equity (private)"
+        )
+
+    if disclosure.rsu_note:
+        text = f"{text} ({disclosure.rsu_note})"
+    return text
+
+
+def format_disclosure_line(
+    member: Member,
+    disclosure: Disclosure,
+    *,
+    au_super_pct: float,
+) -> str:
+    base = format_money_with_aud(
+        disclosure.base_amount, disclosure.base_currency, disclosure.base_aud
+    )
+    parts = [
+        f"{base} base",
+        format_super(disclosure, au_super_pct),
+        format_bonus(disclosure),
+        format_rsu(disclosure),
+    ]
+    if disclosure.other_text:
+        parts.append(disclosure.other_text.strip())
+
+    validated = (
+        member.last_validated_at.date().isoformat()
+        if member.last_validated_at
+        else disclosure.created_at.date().isoformat()
+    )
+    return f"*{member.display_name}*: {' + '.join(parts)}  _(updated {validated})_"
+
+
+def build_pinned_message(
+    rows: list[tuple[Member, Disclosure]],
+    *,
+    au_super_pct: float,
+    generated_at: datetime | None = None,
+) -> str:
+    if not rows:
+        body = copy.PINNED_EMPTY
+    else:
+        ordered = sorted(rows, key=lambda pair: pair[1].base_aud, reverse=True)
+        body = "\n".join(
+            format_disclosure_line(m, d, au_super_pct=au_super_pct) for m, d in ordered
+        )
+
+    stamp = (generated_at or datetime.now(timezone.utc)).strftime("%Y-%m-%d %H:%M UTC")
+    footer = f"\n\n{copy.PINNED_FOOTER_REBUILT.format(stamp=stamp)}"
+    return f"{copy.PINNED_HEADER}\n{body}{footer}"
+
+
+def due_date(last_validated_at: datetime, revalidate_days: int) -> datetime:
+    return last_validated_at + timedelta(days=revalidate_days)
+
+
+def member_status_text(member: Member, config: Config) -> str:
+    """Compatibility wrapper — preferred entrypoint is `copy.member_status`."""
+    return copy.member_status(member, config)
