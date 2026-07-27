@@ -5,7 +5,6 @@ from app.formatting import (
     build_pinned_message,
     format_disclosure_line,
     format_grant,
-    format_grants,
     format_money,
     format_money_with_aud,
     total_comp_aud,
@@ -31,6 +30,14 @@ def test_format_money_foreign_with_aud():
         == "USD 289k (~A$437k)"
     )
     assert format_money_with_aud(250000, "AUD", 250000) == "$250k"
+
+
+def test_format_money_always_rounds_no_cents():
+    # Regression: a per-share equity conversion almost never lands on a
+    # "clean" thousand, and used to fall through to full-cent precision.
+    assert format_money(29682.39, "AUD") == "$29.7k"
+    assert format_money(397271.47, "AUD") == "$397.3k"
+    assert format_money(500.6, "AUD") == "$501"
 
 
 def _member(**kwargs) -> Member:
@@ -87,16 +94,48 @@ def _disclosure(**kwargs) -> Disclosure:
     return Disclosure(**defaults)
 
 
-def test_format_disclosure_line():
+def test_format_disclosure_line_header():
     line = format_disclosure_line(_member(), _disclosure(), au_super_pct=12.0)
-    assert "*sudosammy*:" in line
-    assert "$250k base" in line
-    assert "12% super" in line
-    assert "20% bonus" in line
-    assert "$120k/yr equity (private)" in line
+    header, *bullets = line.split("\n")
+    assert header.startswith("*sudosammy* →")
     # 250k base + 30k super (12%) + 50k bonus + 120k equity
-    assert "~A$450k TC" in line
-    assert "updated 2026-07-01" in line
+    assert "~A$450k TC" in header
+    assert "updated 2026-07-01" in header
+    assert all(b.startswith("- ") for b in bullets)
+
+
+def test_format_disclosure_line_first_bullet_is_base_super_bonus():
+    line = format_disclosure_line(_member(), _disclosure(), au_super_pct=12.0)
+    bullets = line.split("\n")[1:]
+    assert bullets[0] == "- $250k base + 12% super + 20% bonus"
+
+
+def test_format_disclosure_line_one_bullet_per_grant():
+    d = _disclosure(
+        grants=[
+            _grant(id=1, rsu_aud=65000, rsu_note="new-hire grant"),
+            _grant(id=2, rsu_aud=26000, rsu_note="2024 top-up"),
+        ]
+    )
+    line = format_disclosure_line(_member(), d, au_super_pct=12.0)
+    bullets = line.split("\n")[1:]
+    assert "- $120k/yr equity (private) — new-hire grant" in bullets
+    assert "- $120k/yr equity (private) — 2024 top-up" in bullets
+
+
+def test_format_disclosure_line_no_grants_has_no_equity_bullet():
+    d = _disclosure(grants=[])
+    line = format_disclosure_line(_member(), d, au_super_pct=12.0)
+    bullets = line.split("\n")[1:]
+    assert len(bullets) == 1
+    assert bullets[0] == "- $250k base + 12% super + 20% bonus"
+
+
+def test_format_disclosure_line_other_text_gets_its_own_bullet():
+    d = _disclosure(grants=[], other_text="  flexible hours, gym membership  ")
+    line = format_disclosure_line(_member(), d, au_super_pct=12.0)
+    bullets = line.split("\n")[1:]
+    assert bullets[-1] == "- flexible hours, gym membership"
 
 
 def test_total_comp_aud_on_top_super():
@@ -143,11 +182,6 @@ def test_total_comp_aud_multiple_grants_summed():
     assert total_comp_aud(d, au_super_pct=12.0) == 250000 + 65000 + 26000
 
 
-def test_format_no_grants():
-    d = _disclosure(grants=[])
-    assert format_grants(d.grants) == "$0 stock"
-
-
 def test_format_public_grant():
     g = _grant(
         rsu_type="public",
@@ -162,38 +196,19 @@ def test_format_public_grant():
     assert format_grant(g) == "500 NASDAQ:TEAM sh/yr (~A$65k/yr)"
 
 
-def test_format_multiple_concurrent_grants():
-    grants = [
-        _grant(
-            id=1,
-            rsu_type="public",
-            rsu_ticker="NASDAQ:TEAM",
-            rsu_shares_per_year=500,
-            rsu_share_price=100.0,
-            rsu_share_currency="USD",
-            rsu_amount=None,
-            rsu_currency=None,
-            rsu_aud=65000,
-            rsu_note="new-hire grant",
-        ),
-        _grant(
-            id=2,
-            rsu_type="public",
-            rsu_ticker="NASDAQ:TEAM",
-            rsu_shares_per_year=200,
-            rsu_share_price=100.0,
-            rsu_share_currency="USD",
-            rsu_amount=None,
-            rsu_currency=None,
-            rsu_aud=26000,
-            rsu_note="2024 top-up",
-        ),
-    ]
-    text = format_grants(grants)
-    assert text == (
-        "500 NASDAQ:TEAM sh/yr (~A$65k/yr) (new-hire grant) + "
-        "200 NASDAQ:TEAM sh/yr (~A$26k/yr) (2024 top-up)"
+def test_format_public_grant_with_note_uses_em_dash():
+    g = _grant(
+        rsu_type="public",
+        rsu_ticker="NASDAQ:TEAM",
+        rsu_shares_per_year=500,
+        rsu_share_price=100.0,
+        rsu_share_currency="USD",
+        rsu_amount=None,
+        rsu_currency=None,
+        rsu_aud=65000,
+        rsu_note="2024 top-up",
     )
+    assert format_grant(g) == "500 NASDAQ:TEAM sh/yr (~A$65k/yr) — 2024 top-up"
 
 
 def test_format_usd_base_with_public_rsu():
@@ -281,7 +296,18 @@ def test_build_pinned_message_orders_by_base_aud_desc():
         au_super_pct=12.0,
         generated_at=datetime(2026, 7, 26, 4, 0, tzinfo=timezone.utc),
     )
-    bob = msg.index("*bob*:")
-    carol = msg.index("*carol*:")
-    alice = msg.index("*alice*:")
+    bob = msg.index("*bob*")
+    carol = msg.index("*carol*")
+    alice = msg.index("*alice*")
     assert bob < carol < alice
+
+
+def test_build_pinned_message_blank_line_between_members():
+    rows = [
+        (_member(), _disclosure()),
+        (_member(slack_user_id="U2", display_name="bob"), _disclosure(id=2, slack_user_id="U2")),
+    ]
+    msg = build_pinned_message(
+        rows, au_super_pct=12.0, generated_at=datetime(2026, 7, 26, 4, 0, tzinfo=timezone.utc)
+    )
+    assert "\n\n*bob*" in msg

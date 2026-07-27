@@ -10,19 +10,16 @@ from app.db import Disclosure, Grant, Member
 
 
 def format_money(amount: float, currency: str) -> str:
+    """Always rounds for display (nearest dollar under $1k, nearest $100 as
+    'X.Xk', nearest $10k as 'X.XXm') — cents never survive to the board,
+    since e.g. a per-share equity conversion is never going to land clean."""
     currency = currency.upper()
-    m = amount / 1_000_000
-    k = amount / 1000
-    if amount >= 1_000_000 and abs(m - round(m, 2)) < 1e-9:
-        body = f"{round(m, 2):g}m"
-    elif amount >= 1000 and abs(k - round(k)) < 1e-9:
-        body = f"{int(round(k))}k"
-    elif amount >= 1000 and abs(k - round(k, 1)) < 1e-9:
-        body = f"{round(k, 1):.1f}k"
-    elif amount == int(amount):
-        body = f"{amount:,.0f}"
+    if amount >= 1_000_000:
+        body = f"{round(amount / 1_000_000, 2):g}m"
+    elif amount >= 1000:
+        body = f"{round(amount / 1000, 1):g}k"
     else:
-        body = f"{amount:,.2f}"
+        body = f"{round(amount):,}"
 
     if currency == "AUD":
         return f"${body}"
@@ -117,16 +114,8 @@ def format_grant(grant: Grant) -> str:
         )
 
     if grant.rsu_note:
-        text = f"{text} ({grant.rsu_note})"
+        text = f"{text} — {grant.rsu_note}"
     return text
-
-
-def format_grants(grants: list[Grant]) -> str:
-    """Multiple concurrent grants (e.g. yearly top-ups) are itemized rather
-    than summed, so individual share counts/tickers stay visible on the board."""
-    if not grants:
-        return "$0 stock"
-    return " + ".join(format_grant(g) for g in grants)
 
 
 def format_disclosure_line(
@@ -135,28 +124,30 @@ def format_disclosure_line(
     *,
     au_super_pct: float,
 ) -> str:
+    """A name+TC header line followed by one bullet per comp component, using
+    Slack's native '- ' list syntax — a single long '+'-chained line becomes
+    unreadable once someone has several grants plus free-text notes."""
     base = format_money_with_aud(
         disclosure.base_amount, disclosure.base_currency, disclosure.base_aud
     )
-    parts = [
-        f"{base} base",
-        format_super(disclosure, au_super_pct),
-        format_bonus(disclosure),
-        format_grants(disclosure.grants),
-    ]
-    if disclosure.other_text:
-        parts.append(disclosure.other_text.strip())
-
     validated = (
         member.last_validated_at.date().isoformat()
         if member.last_validated_at
         else disclosure.created_at.date().isoformat()
     )
     tc = format_aud(total_comp_aud(disclosure, au_super_pct))
-    return (
-        f"*{member.display_name}*: {' + '.join(parts)} → *~{tc} TC*"
-        f"  _(updated {validated})_"
+    header = (
+        f"*{member.display_name}* → *~{tc} TC*  _(updated {validated})_"
     )
+
+    bullets = [
+        f"- {base} base + {format_super(disclosure, au_super_pct)} + {format_bonus(disclosure)}"
+    ]
+    bullets.extend(f"- {format_grant(g)}" for g in disclosure.grants)
+    if disclosure.other_text:
+        bullets.append(f"- {disclosure.other_text.strip()}")
+
+    return "\n".join([header, *bullets])
 
 
 def build_pinned_message(
@@ -170,7 +161,7 @@ def build_pinned_message(
         channel_value = ""
     else:
         ordered = sorted(rows, key=lambda pair: pair[1].base_aud, reverse=True)
-        body = "\n".join(
+        body = "\n\n".join(
             format_disclosure_line(m, d, au_super_pct=au_super_pct) for m, d in ordered
         )
         channel_total = sum(
