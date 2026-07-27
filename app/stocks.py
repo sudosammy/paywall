@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 CACHE_TTL = timedelta(hours=24)
 
-# Markets whose quote currencies are supported by the Wise FX client.
+# Markets whose quote currencies are supported by the Frankfurter FX client.
 MARKET_YAHOO_SUFFIX: dict[str, str] = {
     "NASDAQ": "",
     "NYSE": "",

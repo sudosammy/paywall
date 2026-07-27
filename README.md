@@ -1,6 +1,6 @@
 # Paywall
 
-Cheeky Slack enforcer for a private salary channel: structured disclosures, a pinned board, AUD conversion via the [Wise rates API](https://api-docs.wise.com/api-reference/rate), and a boot for anyone who won't spill (or re-up) in time.
+Cheeky Slack enforcer for a private salary channel: structured disclosures, a pinned board, AUD conversion via the [Frankfurter API](https://frankfurter.dev/) (no API key required), and a boot for anyone who won't spill (or re-up) in time.
 
 ## Features
 
@@ -9,6 +9,7 @@ Cheeky Slack enforcer for a private salary channel: structured disclosures, a pi
 - Public equity: enter `MARKET:TICKER` + shares vesting per year per grant; valued via [Yahoo Finance](https://finance.yahoo.com/) and converted to AUD
 - Private equity: representative annual dollar value per grant
 - Non-AUD amounts converted to AUD (shown as `USD 289k (~A$437k)`)
+- Estimated total comp (TC) and projected AU income tax per person, plus a channel-wide combined value/tax total
 - Bot-owned pinned summary message, rebuilt on every change
 - New joiners must disclose within **14 days** (nagged every 3 days)
 - Re-validation every **180 days**, with a **14-day** grace period before ejection
@@ -28,11 +29,7 @@ Cheeky Slack enforcer for a private salary channel: structured disclosures, a pi
 6. Invite the bot to your private salary channel (`/invite @Paywall`)
 7. Copy the channel ID and your Slack user ID (admin)
 
-### 2. Wise API token
-
-Create an API token in your Wise business/personal account that can read rates (`GET /v1/rates`).
-
-### 3. Configure and run
+### 2. Configure and run
 
 ```bash
 cp .env.example .env
@@ -50,7 +47,6 @@ SQLite data is persisted in `./data/salary.db`.
 | `SLACK_BOT_TOKEN` | — | Bot OAuth token (`xoxb-`) |
 | `SLACK_APP_TOKEN` | — | App-level token (`xapp-`) for Socket Mode |
 | `SALARY_CHANNEL_ID` | — | Private channel ID |
-| `WISE_API_TOKEN` | — | Wise API bearer token |
 | `ADMIN_USER_ID` | — | Slack user ID for admin-only commands / kick failures |
 | `DB_PATH` | `/data/salary.db` | SQLite path inside the container |
 | `REVALIDATE_DAYS` | `180` | Days between re-validations |
@@ -97,7 +93,8 @@ app/
   main.py          # Socket Mode entrypoint
   config.py        # env config
   db.py            # SQLite schema + queries
-  fx.py            # Wise rates client + cache
+  fx.py            # Frankfurter rates client + cache
+  tax.py           # AU income tax estimate
   modal.py         # disclosure modal + validation
   formatting.py    # money / pinned message rendering
   copy.py          # Paywall voice / user-facing strings

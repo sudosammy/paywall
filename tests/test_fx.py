@@ -5,7 +5,7 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from app.db import Database, utcnow
-from app.fx import WISE_RATES_URL, FxClient
+from app.fx import FRANKFURTER_URL, FxClient
 
 
 @pytest.fixture
@@ -15,7 +15,7 @@ def db(tmp_path) -> Database:
 
 @pytest.fixture
 def fx(db: Database) -> FxClient:
-    return FxClient(db, api_token="test-token")
+    return FxClient(db)
 
 
 def test_aud_is_passthrough(fx: FxClient):
@@ -25,10 +25,11 @@ def test_aud_is_passthrough(fx: FxClient):
     assert result.currency == "AUD"
 
 
-def test_fetches_and_caches_wise_rate(fx: FxClient, db: Database, httpx_mock: HTTPXMock):
+def test_fetches_and_caches_frankfurter_rate(fx: FxClient, db: Database, httpx_mock: HTTPXMock):
+    today = utcnow().date().isoformat()
     httpx_mock.add_response(
-        url=f"{WISE_RATES_URL}?source=USD&target=AUD",
-        json=[{"rate": 1.5, "time": "2026-07-26T00:00:00Z", "source": "USD", "target": "AUD"}],
+        url=f"{FRANKFURTER_URL}?base=USD&symbols=AUD",
+        json={"amount": 1.0, "base": "USD", "date": today, "rates": {"AUD": 1.5}},
     )
     result = fx.convert_to_aud(100, "USD")
     assert result.amount_aud == 150.0

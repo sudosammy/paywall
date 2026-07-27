@@ -74,7 +74,7 @@ def get_with_retries(
 
     When *impersonate* is set (e.g. ``"chrome"``), the request uses curl_cffi
     with browser TLS fingerprinting so Yahoo and similar anti-bot endpoints
-    accept the call. Otherwise httpx is used (Wise, etc.).
+    accept the call. Otherwise httpx is used (Frankfurter, etc.).
     """
     sleeper = sleep or time.sleep
     last_response: Any = None

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 def create_app() -> App:
     config = load_config()
     db = Database(config.db_path)
-    fx = FxClient(db, config.wise_api_token)
+    fx = FxClient(db)
     stocks = StockClient(db)
 
     app = App(token=config.slack_bot_token)

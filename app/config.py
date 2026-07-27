@@ -15,7 +15,6 @@ class Config:
     slack_bot_token: str
     slack_app_token: str
     salary_channel_id: str
-    wise_api_token: str
     admin_user_id: str
     db_path: str
     revalidate_days: int
@@ -32,7 +31,6 @@ def load_config() -> Config:
             "SLACK_BOT_TOKEN",
             "SLACK_APP_TOKEN",
             "SALARY_CHANNEL_ID",
-            "WISE_API_TOKEN",
             "ADMIN_USER_ID",
         )
         if not os.getenv(name)
@@ -44,7 +42,6 @@ def load_config() -> Config:
         slack_bot_token=os.environ["SLACK_BOT_TOKEN"],
         slack_app_token=os.environ["SLACK_APP_TOKEN"],
         salary_channel_id=os.environ["SALARY_CHANNEL_ID"],
-        wise_api_token=os.environ["WISE_API_TOKEN"],
         admin_user_id=os.environ["ADMIN_USER_ID"],
         db_path=os.getenv("DB_PATH", "/data/salary.db"),
         revalidate_days=int(os.getenv("REVALIDATE_DAYS", "180")),

@@ -14,7 +14,6 @@ def _config(**kwargs) -> Config:
         slack_bot_token="x",
         slack_app_token="x",
         salary_channel_id="C1",
-        wise_api_token="x",
         admin_user_id="UADMIN",
         db_path=":memory:",
         revalidate_days=180,
