@@ -44,10 +44,12 @@ class Grant:
     id: int
     disclosure_id: int
     rsu_type: str
+    equity_kind: str
     rsu_ticker: str | None
     rsu_shares_per_year: float | None
     rsu_share_price: float | None
     rsu_share_currency: str | None
+    rsu_strike_price: float | None
     rsu_amount: float | None
     rsu_currency: str | None
     rsu_note: str | None
@@ -159,10 +161,12 @@ class Database:
                     disclosure_id INTEGER NOT NULL,
                     slot INTEGER NOT NULL,
                     rsu_type TEXT NOT NULL,
+                    equity_kind TEXT NOT NULL DEFAULT 'rsu',
                     rsu_ticker TEXT,
                     rsu_shares_per_year REAL,
                     rsu_share_price REAL,
                     rsu_share_currency TEXT,
+                    rsu_strike_price REAL,
                     rsu_amount REAL,
                     rsu_currency TEXT,
                     rsu_note TEXT,
@@ -194,6 +198,7 @@ class Database:
             )
             if not had_grants_table:
                 self._migrate_legacy_single_grant(conn)
+            self._migrate_grants_options_columns(conn)
 
     @staticmethod
     def _migrate_legacy_single_grant(conn: sqlite3.Connection) -> None:
@@ -238,6 +243,23 @@ class Database:
                     row["rsu_aud"],
                 ),
             )
+
+    @staticmethod
+    def _migrate_grants_options_columns(conn: sqlite3.Connection) -> None:
+        """Additive migration: pre-options grants only ever meant RSUs. Adds
+        equity_kind (existing rows default to 'rsu' via the column default)
+        and rsu_strike_price (used only for public options). No-op once both
+        columns exist.
+        """
+        cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(grants)").fetchall()
+        }
+        if "equity_kind" not in cols:
+            conn.execute(
+                "ALTER TABLE grants ADD COLUMN equity_kind TEXT NOT NULL DEFAULT 'rsu'"
+            )
+        if "rsu_strike_price" not in cols:
+            conn.execute("ALTER TABLE grants ADD COLUMN rsu_strike_price REAL")
 
     # --- settings ---
 
@@ -403,19 +425,21 @@ class Database:
                 conn.execute(
                     """
                     INSERT INTO grants (
-                        disclosure_id, slot, rsu_type, rsu_ticker, rsu_shares_per_year,
-                        rsu_share_price, rsu_share_currency, rsu_amount, rsu_currency,
-                        rsu_note, rsu_aud
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        disclosure_id, slot, rsu_type, equity_kind, rsu_ticker,
+                        rsu_shares_per_year, rsu_share_price, rsu_share_currency,
+                        rsu_strike_price, rsu_amount, rsu_currency, rsu_note, rsu_aud
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         disclosure_id,
                         slot,
                         grant["rsu_type"],
+                        grant.get("equity_kind", "rsu"),
                         grant.get("rsu_ticker"),
                         grant.get("rsu_shares_per_year"),
                         grant.get("rsu_share_price"),
                         grant.get("rsu_share_currency"),
+                        grant.get("rsu_strike_price"),
                         grant.get("rsu_amount"),
                         grant.get("rsu_currency"),
                         grant.get("rsu_note"),
@@ -584,10 +608,12 @@ class Database:
             id=row["id"],
             disclosure_id=row["disclosure_id"],
             rsu_type=row["rsu_type"],
+            equity_kind=row["equity_kind"],
             rsu_ticker=row["rsu_ticker"],
             rsu_shares_per_year=row["rsu_shares_per_year"],
             rsu_share_price=row["rsu_share_price"],
             rsu_share_currency=row["rsu_share_currency"],
+            rsu_strike_price=row["rsu_strike_price"],
             rsu_amount=row["rsu_amount"],
             rsu_currency=row["rsu_currency"],
             rsu_note=row["rsu_note"],

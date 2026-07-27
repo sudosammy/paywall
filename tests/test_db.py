@@ -180,3 +180,123 @@ def test_migrates_legacy_single_grant_disclosures(tmp_path):
     assert latest.grants[0].rsu_ticker == "NASDAQ:TEAM"
     assert latest.grants[0].rsu_shares_per_year == 500
     assert latest.grants[0].rsu_aud == 75000
+    # Pre-options grants are backfilled as plain RSUs with no strike price.
+    assert latest.grants[0].equity_kind == "rsu"
+    assert latest.grants[0].rsu_strike_price is None
+
+
+def test_add_disclosure_persists_options_grant(db: Database):
+    db.upsert_member("U1", "alice")
+    data = dict(
+        DISCLOSURE,
+        grants=[
+            {
+                "rsu_type": "public",
+                "equity_kind": "options",
+                "rsu_ticker": "NASDAQ:TEAM",
+                "rsu_shares_per_year": 1000,
+                "rsu_share_price": 120.0,
+                "rsu_share_currency": "USD",
+                "rsu_strike_price": 45.0,
+                "rsu_amount": None,
+                "rsu_currency": None,
+                "rsu_note": "options grant",
+                "rsu_aud": 112500.0,
+            },
+        ],
+    )
+
+    disclosure = db.add_disclosure("U1", data)
+    assert len(disclosure.grants) == 1
+    grant = disclosure.grants[0]
+    assert grant.equity_kind == "options"
+    assert grant.rsu_strike_price == 45.0
+    assert grant.rsu_aud == 112500.0
+
+    latest = db.get_latest_disclosure("U1")
+    assert latest.grants[0].equity_kind == "options"
+    assert latest.grants[0].rsu_strike_price == 45.0
+
+
+def test_migrates_grants_table_missing_options_columns(tmp_path):
+    """A DB that already has the multi-grant `grants` table (from before the
+    options feature existed) should get equity_kind/rsu_strike_price added
+    additively, with existing rows defaulting to plain 'rsu'."""
+    path = str(tmp_path / "pre_options.db")
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE members (
+            slack_user_id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            joined_at TEXT NOT NULL,
+            last_validated_at TEXT,
+            last_reminded_at TEXT
+        );
+        CREATE TABLE disclosures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slack_user_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            base_amount REAL NOT NULL,
+            base_currency TEXT NOT NULL,
+            super_type TEXT NOT NULL,
+            super_pct REAL,
+            bonus_type TEXT NOT NULL,
+            bonus_value REAL,
+            bonus_currency TEXT,
+            bonus_note TEXT,
+            other_text TEXT,
+            base_aud REAL NOT NULL,
+            bonus_aud REAL,
+            fx_rate_date TEXT
+        );
+        CREATE TABLE grants (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            disclosure_id INTEGER NOT NULL,
+            slot INTEGER NOT NULL,
+            rsu_type TEXT NOT NULL,
+            rsu_ticker TEXT,
+            rsu_shares_per_year REAL,
+            rsu_share_price REAL,
+            rsu_share_currency TEXT,
+            rsu_amount REAL,
+            rsu_currency TEXT,
+            rsu_note TEXT,
+            rsu_aud REAL
+        );
+        """
+    )
+    now = to_iso(utcnow())
+    conn.execute(
+        "INSERT INTO members (slack_user_id, display_name, joined_at) VALUES (?, ?, ?)",
+        ("U1", "alice", now),
+    )
+    conn.execute(
+        """
+        INSERT INTO disclosures (
+            slack_user_id, created_at, base_amount, base_currency,
+            super_type, bonus_type, base_aud
+        ) VALUES ('U1', ?, 100000, 'AUD', 'on_top_legislated', 'none', 100000)
+        """,
+        (now,),
+    )
+    disclosure_id = conn.execute("SELECT id FROM disclosures").fetchone()[0]
+    conn.execute(
+        """
+        INSERT INTO grants (
+            disclosure_id, slot, rsu_type, rsu_ticker, rsu_shares_per_year,
+            rsu_share_price, rsu_share_currency, rsu_aud
+        ) VALUES (?, 1, 'public', 'NASDAQ:TEAM', 500, 100.0, 'USD', 75000)
+        """,
+        (disclosure_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(path)
+    latest = db.get_latest_disclosure("U1")
+    assert latest is not None
+    assert latest.grants[0].equity_kind == "rsu"
+    assert latest.grants[0].rsu_strike_price is None
+    assert latest.grants[0].rsu_aud == 75000

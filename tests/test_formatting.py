@@ -58,10 +58,12 @@ def _grant(**kwargs) -> Grant:
         id=1,
         disclosure_id=1,
         rsu_type="private",
+        equity_kind="rsu",
         rsu_ticker=None,
         rsu_shares_per_year=None,
         rsu_share_price=None,
         rsu_share_currency=None,
+        rsu_strike_price=None,
         rsu_amount=120000,
         rsu_currency="AUD",
         rsu_note=None,
@@ -127,15 +129,23 @@ def test_format_disclosure_line_no_grants_has_no_equity_bullet():
     d = _disclosure(grants=[])
     line = format_disclosure_line(_member(), d, au_super_pct=12.0)
     bullets = line.split("\n")[1:]
-    assert len(bullets) == 1
     assert bullets[0] == "- $250k base + 12% super + 20% bonus"
+    assert not any("equity" in b or "sh/yr" in b for b in bullets)
 
 
 def test_format_disclosure_line_other_text_gets_its_own_bullet():
     d = _disclosure(grants=[], other_text="  flexible hours, gym membership  ")
     line = format_disclosure_line(_member(), d, au_super_pct=12.0)
     bullets = line.split("\n")[1:]
-    assert bullets[-1] == "- flexible hours, gym membership"
+    assert "- flexible hours, gym membership" in bullets
+
+
+def test_format_disclosure_line_tax_bullet_is_last_and_excludes_super():
+    # base 250k + bonus 50k + equity 120k = 420k taxable (super excluded)
+    d = _disclosure()
+    line = format_disclosure_line(_member(), d, au_super_pct=12.0)
+    bullets = line.split("\n")[1:]
+    assert bullets[-1] == "- Est. tax (excl. super): ~A$163.3k (47% marginal)"
 
 
 def test_total_comp_aud_on_top_super():
@@ -211,6 +221,33 @@ def test_format_public_grant_with_note_uses_em_dash():
     assert format_grant(g) == "500 NASDAQ:TEAM sh/yr (~A$65k/yr) — 2024 top-up"
 
 
+def test_format_public_options_grant():
+    g = _grant(
+        rsu_type="public",
+        equity_kind="options",
+        rsu_ticker="NASDAQ:TEAM",
+        rsu_shares_per_year=1000,
+        rsu_share_price=120.0,
+        rsu_share_currency="USD",
+        rsu_strike_price=45.0,
+        rsu_amount=None,
+        rsu_currency=None,
+        rsu_aud=112500,
+    )
+    assert format_grant(g) == "1000 NASDAQ:TEAM options/yr @ USD 45 strike (~A$112.5k/yr spread)"
+
+
+def test_format_private_options_grant_labelled_distinctly():
+    g = _grant(
+        rsu_type="private",
+        equity_kind="options",
+        rsu_amount=50000,
+        rsu_currency="AUD",
+        rsu_aud=50000,
+    )
+    assert format_grant(g) == "$50k/yr equity (private, options)"
+
+
 def test_format_usd_base_with_public_rsu():
     d = _disclosure(
         base_amount=289000,
@@ -260,6 +297,8 @@ def test_build_pinned_message_channel_value():
     )
     assert "Channel value: ~A$500k TC across 2 disclosures" in msg
     assert "hoard responsibly" in msg
+    # est. tax(200k) + est. tax(300k) = 59,870 + 106,870 = 166,740
+    assert "~A$166.7k combined est. tax" in msg
 
 
 def test_build_pinned_message_empty_has_no_channel_value():

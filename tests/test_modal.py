@@ -4,7 +4,7 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from app.db import Database
-from app.fx import WISE_RATES_URL, FxClient
+from app.fx import FRANKFURTER_URL, FxClient
 from app.modal import MAX_GRANTS, apply_fx, build_disclosure_modal, parse_submission
 from app.stocks import StockClient
 
@@ -36,8 +36,12 @@ def _empty_grant_values(index: int) -> dict[str, Any]:
         f"grant{index}_rsu_type": {
             "value": {"selected_option": {"value": "none"}}
         },
+        f"grant{index}_equity_kind": {
+            "value": {"selected_option": {"value": "rsu"}}
+        },
         f"grant{index}_rsu_ticker": {"value": {"value": ""}},
         f"grant{index}_rsu_shares_per_year": {"value": {"value": ""}},
+        f"grant{index}_strike_price": {"value": {"value": ""}},
         f"grant{index}_rsu_amount": {"value": {"value": ""}},
         f"grant{index}_rsu_currency": {
             "value": {"selected_option": {"value": "AUD"}}
@@ -84,7 +88,7 @@ def _values(*, grant1: dict[str, Any] | None = None, **overrides):
 @pytest.fixture
 def fx(tmp_path) -> FxClient:
     db = Database(str(tmp_path / "modal.db"))
-    return FxClient(db, "token")
+    return FxClient(db)
 
 
 @pytest.fixture
@@ -244,8 +248,8 @@ def test_public_valuation(
         ),
     )
     httpx_mock.add_response(
-        url=f"{WISE_RATES_URL}?source=USD&target=AUD",
-        json=[{"rate": 1.5, "time": "2026-07-26T00:00:00Z"}],
+        url=f"{FRANKFURTER_URL}?base=USD&symbols=AUD",
+        json={"amount": 1.0, "base": "USD", "date": "2026-07-26", "rates": {"AUD": 1.5}},
     )
     values = _values(
         bonus_type={"value": {"selected_option": {"value": "none"}}},
@@ -265,6 +269,179 @@ def test_public_valuation(
     assert grant["rsu_share_price"] == 100.0
     assert grant["rsu_share_currency"] == "USD"
     assert grant["rsu_aud"] == 75000.0
+
+
+def test_public_options_requires_strike_price():
+    values = _values(
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "public"}}},
+            equity_kind={"value": {"selected_option": {"value": "options"}}},
+            rsu_ticker={"value": {"value": "NASDAQ:TEAM"}},
+            rsu_shares_per_year={"value": {"value": "500"}},
+            strike_price={"value": {"value": ""}},
+        )
+    )
+    data, errors = parse_submission(values)
+    assert data is None
+    assert "grant1_strike_price" in errors
+
+
+def test_public_rsu_rejects_strike_price():
+    values = _values(
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "public"}}},
+            equity_kind={"value": {"selected_option": {"value": "rsu"}}},
+            rsu_ticker={"value": {"value": "NASDAQ:TEAM"}},
+            rsu_shares_per_year={"value": {"value": "500"}},
+            strike_price={"value": {"value": "45"}},
+        )
+    )
+    data, errors = parse_submission(values)
+    assert data is None
+    assert "grant1_strike_price" in errors
+    assert "RSU" in errors["grant1_strike_price"]
+
+
+def test_private_rejects_strike_price():
+    values = _values(
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "private"}}},
+            equity_kind={"value": {"selected_option": {"value": "options"}}},
+            rsu_amount={"value": {"value": "120000"}},
+            strike_price={"value": {"value": "45"}},
+        )
+    )
+    data, errors = parse_submission(values)
+    assert data is None
+    assert "grant1_strike_price" in errors
+
+
+def test_none_rejects_filled_strike_price():
+    values = _values(
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "none"}}},
+            strike_price={"value": {"value": "45"}},
+        )
+    )
+    data, errors = parse_submission(values)
+    assert data is None
+    assert "grant1_strike_price" in errors
+
+
+def test_public_options_parses_correctly():
+    values = _values(
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "public"}}},
+            equity_kind={"value": {"selected_option": {"value": "options"}}},
+            rsu_ticker={"value": {"value": "NASDAQ:TEAM"}},
+            rsu_shares_per_year={"value": {"value": "1000"}},
+            strike_price={"value": {"value": "45"}},
+        )
+    )
+    data, errors = parse_submission(values)
+    assert errors == {}
+    grant = data["grants"][0]
+    assert grant["equity_kind"] == "options"
+    assert grant["rsu_strike_price"] == 45.0
+
+
+def test_public_options_valuation_is_spread_over_strike(
+    fx: FxClient, stocks: StockClient, httpx_mock: HTTPXMock, monkeypatch
+):
+    monkeypatch.setattr(
+        "app.http_retry._impersonated_get",
+        lambda *a, **k: FakeYahooResponse(
+            json_data={
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {
+                                "regularMarketPrice": 120.0,
+                                "currency": "USD",
+                                "regularMarketTime": 1720000000,
+                            }
+                        }
+                    ],
+                    "error": None,
+                }
+            }
+        ),
+    )
+    httpx_mock.add_response(
+        url=f"{FRANKFURTER_URL}?base=USD&symbols=AUD",
+        json={"amount": 1.0, "base": "USD", "date": "2026-07-26", "rates": {"AUD": 1.5}},
+    )
+    values = _values(
+        bonus_type={"value": {"selected_option": {"value": "none"}}},
+        bonus_value={"value": {"value": ""}},
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "public"}}},
+            equity_kind={"value": {"selected_option": {"value": "options"}}},
+            rsu_ticker={"value": {"value": "NASDAQ:TEAM"}},
+            rsu_shares_per_year={"value": {"value": "1000"}},
+            strike_price={"value": {"value": "45"}},
+        ),
+    )
+    data, errors = parse_submission(values)
+    assert errors == {}
+    full = apply_fx(data, fx, stocks)
+    grant = full["grants"][0]
+    # spread = $120 - $45 = $75; 1000 * $75 = $75,000 USD * 1.5 = A$112,500
+    # (market price $120 is still recorded, unlike the strike, which isn't converted)
+    assert grant["rsu_share_price"] == 120.0
+    assert grant["rsu_strike_price"] == 45.0
+    assert grant["rsu_aud"] == 112500.0
+
+
+def test_public_options_underwater_floors_at_zero(
+    fx: FxClient, stocks: StockClient, httpx_mock: HTTPXMock, monkeypatch
+):
+    monkeypatch.setattr(
+        "app.http_retry._impersonated_get",
+        lambda *a, **k: FakeYahooResponse(
+            json_data={
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {
+                                "regularMarketPrice": 30.0,
+                                "currency": "USD",
+                                "regularMarketTime": 1720000000,
+                            }
+                        }
+                    ],
+                    "error": None,
+                }
+            }
+        ),
+    )
+    httpx_mock.add_response(
+        url=f"{FRANKFURTER_URL}?base=USD&symbols=AUD",
+        json={"amount": 1.0, "base": "USD", "date": "2026-07-26", "rates": {"AUD": 1.5}},
+    )
+    values = _values(
+        bonus_type={"value": {"selected_option": {"value": "none"}}},
+        bonus_value={"value": {"value": ""}},
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "public"}}},
+            equity_kind={"value": {"selected_option": {"value": "options"}}},
+            rsu_ticker={"value": {"value": "NASDAQ:TEAM"}},
+            rsu_shares_per_year={"value": {"value": "1000"}},
+            strike_price={"value": {"value": "45"}},
+        ),
+    )
+    data, errors = parse_submission(values)
+    assert errors == {}
+    full = apply_fx(data, fx, stocks)
+    # strike ($45) above market price ($30) — underwater options are worth $0, not negative
+    assert full["grants"][0]["rsu_aud"] == 0.0
 
 
 def test_multiple_concurrent_grants(
@@ -290,8 +467,8 @@ def test_multiple_concurrent_grants(
         ),
     )
     httpx_mock.add_response(
-        url=f"{WISE_RATES_URL}?source=USD&target=AUD",
-        json=[{"rate": 1.5, "time": "2026-07-26T00:00:00Z"}],
+        url=f"{FRANKFURTER_URL}?base=USD&symbols=AUD",
+        json={"amount": 1.0, "base": "USD", "date": "2026-07-26", "rates": {"AUD": 1.5}},
     )
     values = _values(
         grant1=_grant_values(
@@ -394,8 +571,8 @@ def test_private_rejects_ticker_and_shares():
 
 def test_usd_conversion(fx: FxClient, stocks: StockClient, httpx_mock: HTTPXMock):
     httpx_mock.add_response(
-        url=f"{WISE_RATES_URL}?source=USD&target=AUD",
-        json=[{"rate": 1.5, "time": "2026-07-26T00:00:00Z"}],
+        url=f"{FRANKFURTER_URL}?base=USD&symbols=AUD",
+        json={"amount": 1.0, "base": "USD", "date": "2026-07-26", "rates": {"AUD": 1.5}},
     )
     values = _values(
         base_amount={"value": {"value": "100000"}},

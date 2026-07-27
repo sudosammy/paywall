@@ -86,7 +86,7 @@ SUBMIT_THANKS = (
 )
 
 FX_FAILED = (
-    "An external API call to Wise or Yahoo failed, so nothing was saved. "
+    "An external API call to Frankfurter or Yahoo failed, so nothing was saved. "
     "Give it a minute and try `/salary` again."
 )
 
@@ -111,22 +111,27 @@ PINNED_EMPTY = "_Crickets. Nobody's spilled yet._"
 PINNED_FOOTER_REBUILT = "_Last rebuilt {stamp}_"
 
 
-def channel_value_line(total: str, count: int) -> str:
-    return f"*Channel value: {total} TC across {count} disclosures* — hoard responsibly."
+def channel_value_line(total: str, count: int, tax_total: str) -> str:
+    return (
+        f"*Channel value: {total} TC across {count} disclosures* — hoard responsibly. "
+        f"_({tax_total} combined est. tax)_"
+    )
 
 MODAL_INTRO = (
-    "Time to confess. Non-AUD amounts convert via Wise; equity details are "
+    "Time to confess. Non-AUD amounts convert via Frankfurter; equity details are "
     "below (scroll down — you can list multiple grants)."
 )
 
 def equity_section_intro(max_grants: int) -> str:
     return (
-        f"*Equity / RSUs* — got topped up during a performance cycle? List each "
-        f"grant separately below (up to {max_grants}), new-hire grant included. "
-        f"For public equity, enter shares vesting *per year* for that grant "
-        f"(not the full multi-year grant) plus a `MARKET:TICKER` — we price it "
-        f"and convert to AUD. Private equity is a representative annual dollar "
-        f"value per grant."
+        f"*Equity / RSUs / Options* — got topped up during a performance cycle? "
+        f"List each grant separately below (up to {max_grants}), new-hire grant "
+        f"included. For public equity, enter shares/options vesting *per year* "
+        f"for that grant (not the full multi-year grant) plus a `MARKET:TICKER` "
+        f"— we price it and convert to AUD. Picked Options? Also enter the "
+        f"strike/exercise price — we value the spread over the current share "
+        f"price, not the full share value. Private equity/options is a "
+        f"representative annual dollar value per grant."
     )
 
 MODAL_TITLE = "Spill your TC"

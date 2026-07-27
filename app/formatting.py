@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from app import copy
+from app import copy, tax
 from app.config import Config
 from app.db import Disclosure, Grant, Member
 
@@ -42,23 +42,37 @@ def format_aud(amount: float) -> str:
     return format_money(amount, "AUD").replace("$", "A$", 1)
 
 
-def total_comp_aud(disclosure: Disclosure, au_super_pct: float) -> float:
-    """Base + super (if paid on top) + bonus + all equity grants, all in AUD.
-
-    Super that's 'included' in base or 'none' contributes nothing extra —
-    it's either already counted in base_aud or doesn't exist.
-    """
+def _super_amount_aud(disclosure: Disclosure, au_super_pct: float) -> float:
+    """Super that's 'included' in base or 'none' contributes nothing extra —
+    it's either already counted in base_aud or doesn't exist."""
     if disclosure.super_type == "on_top_legislated":
-        super_amount = disclosure.base_aud * (au_super_pct / 100.0)
-    elif disclosure.super_type == "custom_pct":
+        return disclosure.base_aud * (au_super_pct / 100.0)
+    if disclosure.super_type == "custom_pct":
         pct = disclosure.super_pct if disclosure.super_pct is not None else au_super_pct
-        super_amount = disclosure.base_aud * (pct / 100.0)
-    else:
-        super_amount = 0.0
+        return disclosure.base_aud * (pct / 100.0)
+    return 0.0
 
+
+def _equity_aud(disclosure: Disclosure) -> float:
+    return sum(g.rsu_aud or 0.0 for g in disclosure.grants)
+
+
+def total_comp_aud(disclosure: Disclosure, au_super_pct: float) -> float:
+    """Base + super (if paid on top) + bonus + all equity grants, all in AUD."""
     bonus = disclosure.bonus_aud or 0.0
-    equity = sum(g.rsu_aud or 0.0 for g in disclosure.grants)
-    return disclosure.base_aud + super_amount + bonus + equity
+    return (
+        disclosure.base_aud
+        + _super_amount_aud(disclosure, au_super_pct)
+        + bonus
+        + _equity_aud(disclosure)
+    )
+
+
+def taxable_income_aud(disclosure: Disclosure) -> float:
+    """Base + bonus + equity — excludes super, which isn't part of an
+    individual's assessable income (the fund pays its own contributions tax
+    on it instead, separate from personal marginal rates)."""
+    return disclosure.base_aud + (disclosure.bonus_aud or 0.0) + _equity_aud(disclosure)
 
 
 def format_super(disclosure: Disclosure, au_super_pct: float) -> str:
@@ -93,24 +107,33 @@ def format_bonus(disclosure: Disclosure) -> str:
 
 
 def format_grant(grant: Grant) -> str:
+    is_options = grant.equity_kind == "options"
+
     if grant.rsu_type == "public":
         shares = grant.rsu_shares_per_year or 0
-        if shares == int(shares):
-            shares_text = f"{int(shares)}"
-        else:
-            shares_text = f"{shares:g}"
+        shares_text = f"{int(shares)}" if shares == int(shares) else f"{shares:g}"
         ticker = grant.rsu_ticker or "?"
-        if grant.rsu_aud is not None:
-            aud = format_money(grant.rsu_aud, "AUD").replace("$", "A$", 1)
-            text = f"{shares_text} {ticker} sh/yr (~{aud}/yr)"
+
+        if is_options:
+            strike = format_money(
+                grant.rsu_strike_price or 0, grant.rsu_share_currency or "AUD"
+            )
+            unit = f"{shares_text} {ticker} options/yr @ {strike} strike"
+            text = (
+                f"{unit} (~{format_aud(grant.rsu_aud)}/yr spread)"
+                if grant.rsu_aud is not None
+                else unit
+            )
         else:
-            text = f"{shares_text} {ticker} sh/yr"
+            unit = f"{shares_text} {ticker} sh/yr"
+            text = f"{unit} (~{format_aud(grant.rsu_aud)}/yr)" if grant.rsu_aud is not None else unit
     else:
         # private
         currency = grant.rsu_currency or "AUD"
+        suffix = "private, options" if is_options else "private"
         text = (
             format_money_with_aud(grant.rsu_amount or 0, currency, grant.rsu_aud)
-            + "/yr equity (private)"
+            + f"/yr equity ({suffix})"
         )
 
     if grant.rsu_note:
@@ -147,6 +170,11 @@ def format_disclosure_line(
     if disclosure.other_text:
         bullets.append(f"- {disclosure.other_text.strip()}")
 
+    taxable = taxable_income_aud(disclosure)
+    est_tax = format_aud(tax.estimate_tax_aud(taxable))
+    marginal_pct = tax.marginal_rate(taxable) * 100
+    bullets.append(f"- Est. tax (excl. super): ~{est_tax} ({marginal_pct:g}% marginal)")
+
     return "\n".join([header, *bullets])
 
 
@@ -167,8 +195,13 @@ def build_pinned_message(
         channel_total = sum(
             total_comp_aud(d, au_super_pct) for _, d in ordered
         )
+        channel_tax_total = sum(
+            tax.estimate_tax_aud(taxable_income_aud(d)) for _, d in ordered
+        )
         channel_value = "\n\n" + copy.channel_value_line(
-            f"~{format_aud(channel_total)}", len(ordered)
+            f"~{format_aud(channel_total)}",
+            len(ordered),
+            f"~{format_aud(channel_tax_total)}",
         )
 
     stamp = (generated_at or datetime.now(timezone.utc)).strftime("%Y-%m-%d %H:%M UTC")

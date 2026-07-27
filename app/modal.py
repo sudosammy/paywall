@@ -3,7 +3,7 @@
 Parsing/validation is deliberately split from FX / stock conversion:
 `parse_submission` is fast and runs before the Slack 3-second ack deadline
 (so field errors can be returned via response_action), while `apply_fx`
-performs Wise / Yahoo API calls after the ack.
+performs Frankfurter / Yahoo API calls after the ack.
 """
 
 from __future__ import annotations
@@ -69,8 +69,10 @@ def _initial_from_disclosure(disclosure: Disclosure | None) -> dict[str, Any]:
 def _empty_grant_init(base_currency: str) -> dict[str, Any]:
     return {
         "rsu_type": "none",
+        "equity_kind": "rsu",
         "rsu_ticker": "",
         "rsu_shares_per_year": "",
+        "strike_price": "",
         "rsu_amount": "",
         "rsu_currency": base_currency,
         "rsu_note": "",
@@ -80,11 +82,15 @@ def _empty_grant_init(base_currency: str) -> dict[str, Any]:
 def _grant_init(grant: Grant, base_currency: str) -> dict[str, Any]:
     return {
         "rsu_type": grant.rsu_type,
+        "equity_kind": grant.equity_kind,
         "rsu_ticker": grant.rsu_ticker or "",
         "rsu_shares_per_year": (
             _num(grant.rsu_shares_per_year)
             if grant.rsu_shares_per_year is not None
             else ""
+        ),
+        "strike_price": (
+            _num(grant.rsu_strike_price) if grant.rsu_strike_price is not None else ""
         ),
         "rsu_amount": _num(grant.rsu_amount) if grant.rsu_amount is not None else "",
         "rsu_currency": grant.rsu_currency or base_currency,
@@ -177,6 +183,18 @@ def _grant_blocks(index: int, init: dict[str, Any]) -> list[dict[str, Any]]:
         },
         {
             "type": "input",
+            "block_id": bid("equity_kind"),
+            "element": _radio(
+                [
+                    ("rsu", "RSU"),
+                    ("options", "Options"),
+                ],
+                init["equity_kind"] if init["equity_kind"] in ("rsu", "options") else "rsu",
+            ),
+            "label": {"type": "plain_text", "text": "Instrument"},
+        },
+        {
+            "type": "input",
             "block_id": bid("rsu_ticker"),
             "optional": True,
             "element": _text_input(
@@ -190,10 +208,20 @@ def _grant_blocks(index: int, init: dict[str, Any]) -> list[dict[str, Any]]:
             "block_id": bid("rsu_shares_per_year"),
             "optional": True,
             "element": _text_input(
-                placeholder="shares vesting per year, e.g. 500",
+                placeholder="shares/options vesting per year, e.g. 500",
                 initial=init["rsu_shares_per_year"],
             ),
-            "label": {"type": "plain_text", "text": "Shares per year (if public)"},
+            "label": {"type": "plain_text", "text": "Shares/options per year (if public)"},
+        },
+        {
+            "type": "input",
+            "block_id": bid("strike_price"),
+            "optional": True,
+            "element": _text_input(
+                placeholder="exercise price per share, e.g. 45.00",
+                initial=init["strike_price"],
+            ),
+            "label": {"type": "plain_text", "text": "Strike price (if public options)"},
         },
         {
             "type": "input",
@@ -414,11 +442,14 @@ def _parse_grant_slot(
         return _grant_block_id(index, field)
 
     rsu_type = _get_select(values, bid("rsu_type")) or "none"
+    equity_kind = _get_select(values, bid("equity_kind")) or "rsu"
     rsu_ticker_raw = _get_plain(values, bid("rsu_ticker"))
     rsu_shares_raw = _get_plain(values, bid("rsu_shares_per_year"))
     rsu_shares_per_year = _parse_number(
         rsu_shares_raw, field=bid("rsu_shares_per_year"), errors=errors
     )
+    strike_price_raw = _get_plain(values, bid("strike_price"))
+    strike_price = _parse_number(strike_price_raw, field=bid("strike_price"), errors=errors)
     rsu_amount_raw = _get_plain(values, bid("rsu_amount"))
     rsu_amount = _parse_number(rsu_amount_raw, field=bid("rsu_amount"), errors=errors)
     rsu_currency: str | None = (
@@ -439,6 +470,8 @@ def _parse_grant_slot(
             errors[bid("rsu_shares_per_year")] = equity_mismatch
         if rsu_amount_raw:
             errors[bid("rsu_amount")] = equity_mismatch
+        if strike_price_raw:
+            errors[bid("strike_price")] = equity_mismatch
         return None
     elif rsu_type == "public":
         if rsu_amount_raw:
@@ -462,6 +495,19 @@ def _parse_grant_slot(
             errors[bid("rsu_shares_per_year")] = "Enter shares vesting per year"
         elif rsu_shares_per_year is not None and rsu_shares_per_year <= 0:
             errors[bid("rsu_shares_per_year")] = "Must be greater than zero"
+
+        if equity_kind == "options":
+            if strike_price is None and bid("strike_price") not in errors:
+                errors[bid("strike_price")] = "Enter a strike/exercise price for options"
+            elif strike_price is not None and strike_price <= 0:
+                errors[bid("strike_price")] = "Must be greater than zero"
+        else:
+            if strike_price_raw:
+                errors[bid("strike_price")] = (
+                    "You entered a strike price but selected RSU — "
+                    "pick Options or clear this field."
+                )
+            strike_price = None
     elif rsu_type == "private":
         if rsu_ticker_raw:
             errors[bid("rsu_ticker")] = (
@@ -473,8 +519,13 @@ def _parse_grant_slot(
                 "You entered shares but selected Private — "
                 "clear this field or switch to Public."
             )
+        if strike_price_raw:
+            errors[bid("strike_price")] = (
+                "Strike price only applies to public options — clear this field."
+            )
         rsu_ticker = None
         rsu_shares_per_year = None
+        strike_price = None
         if rsu_amount is None and bid("rsu_amount") not in errors:
             errors[bid("rsu_amount")] = "Enter a representative annual equity value"
         elif rsu_amount is not None and rsu_amount <= 0:
@@ -486,8 +537,10 @@ def _parse_grant_slot(
 
     return {
         "rsu_type": rsu_type,
+        "equity_kind": equity_kind,
         "rsu_ticker": rsu_ticker,
         "rsu_shares_per_year": rsu_shares_per_year,
+        "rsu_strike_price": strike_price,
         "rsu_amount": rsu_amount,
         "rsu_currency": rsu_currency,
         "rsu_note": rsu_note,
@@ -601,7 +654,13 @@ def apply_fx(
         enriched = dict(grant)
         if grant["rsu_type"] == "public":
             quote = stocks.get_price(grant["rsu_ticker"])
-            annual_value = grant["rsu_shares_per_year"] * quote.price
+            if grant.get("equity_kind") == "options":
+                # Options are only worth the spread over the strike price —
+                # never the full share price like a vested RSU.
+                spread = max(0.0, quote.price - grant["rsu_strike_price"])
+                annual_value = grant["rsu_shares_per_year"] * spread
+            else:
+                annual_value = grant["rsu_shares_per_year"] * quote.price
             rsu_conv = fx.convert_to_aud(annual_value, quote.currency)
             enriched["rsu_aud"] = rsu_conv.amount_aud
             enriched["rsu_share_price"] = quote.price
