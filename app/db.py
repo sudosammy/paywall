@@ -54,6 +54,7 @@ class Grant:
     rsu_currency: str | None
     rsu_note: str | None
     rsu_aud: float | None
+    grant_year_start: int | None
 
 
 @dataclass
@@ -74,6 +75,7 @@ class Disclosure:
     base_aud: float
     bonus_aud: float | None
     fx_rate_date: str | None
+    fy_period: str | None
 
 
 @dataclass
@@ -147,6 +149,7 @@ class Database:
                     base_aud REAL NOT NULL,
                     bonus_aud REAL,
                     fx_rate_date TEXT,
+                    fy_period TEXT,
                     FOREIGN KEY (slack_user_id) REFERENCES members(slack_user_id)
                 );
 
@@ -171,6 +174,7 @@ class Database:
                     rsu_currency TEXT,
                     rsu_note TEXT,
                     rsu_aud REAL,
+                    grant_year_start INTEGER,
                     FOREIGN KEY (disclosure_id) REFERENCES disclosures(id)
                 );
 
@@ -198,7 +202,18 @@ class Database:
             )
             if not had_grants_table:
                 self._migrate_legacy_single_grant(conn)
-            self._migrate_grants_options_columns(conn)
+            self._add_missing_columns(
+                conn,
+                "grants",
+                (
+                    ("equity_kind", "TEXT NOT NULL DEFAULT 'rsu'"),
+                    ("rsu_strike_price", "REAL"),
+                    ("grant_year_start", "INTEGER"),
+                ),
+            )
+            self._add_missing_columns(
+                conn, "disclosures", (("fy_period", "TEXT"),)
+            )
 
     @staticmethod
     def _migrate_legacy_single_grant(conn: sqlite3.Connection) -> None:
@@ -245,21 +260,19 @@ class Database:
             )
 
     @staticmethod
-    def _migrate_grants_options_columns(conn: sqlite3.Connection) -> None:
-        """Additive migration: pre-options grants only ever meant RSUs. Adds
-        equity_kind (existing rows default to 'rsu' via the column default)
-        and rsu_strike_price (used only for public options). No-op once both
-        columns exist.
+    def _add_missing_columns(
+        conn: sqlite3.Connection, table: str, columns: tuple[tuple[str, str], ...]
+    ) -> None:
+        """Additive migration: add any of *columns* (name, DDL type/default)
+        not already present on *table*. Existing rows get the column's
+        default (or NULL if it has none) — safe to run against live data.
         """
-        cols = {
-            row["name"] for row in conn.execute("PRAGMA table_info(grants)").fetchall()
+        existing = {
+            row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
         }
-        if "equity_kind" not in cols:
-            conn.execute(
-                "ALTER TABLE grants ADD COLUMN equity_kind TEXT NOT NULL DEFAULT 'rsu'"
-            )
-        if "rsu_strike_price" not in cols:
-            conn.execute("ALTER TABLE grants ADD COLUMN rsu_strike_price REAL")
+        for name, ddl in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
     # --- settings ---
 
@@ -400,8 +413,8 @@ class Database:
                     base_amount, base_currency,
                     super_type, super_pct,
                     bonus_type, bonus_value, bonus_currency, bonus_note,
-                    other_text, base_aud, bonus_aud, fx_rate_date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    other_text, base_aud, bonus_aud, fx_rate_date, fy_period
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     slack_user_id,
@@ -418,6 +431,7 @@ class Database:
                     data["base_aud"],
                     data.get("bonus_aud"),
                     data.get("fx_rate_date"),
+                    data.get("fy_period"),
                 ),
             )
             disclosure_id = cur.lastrowid
@@ -427,8 +441,9 @@ class Database:
                     INSERT INTO grants (
                         disclosure_id, slot, rsu_type, equity_kind, rsu_ticker,
                         rsu_shares_per_year, rsu_share_price, rsu_share_currency,
-                        rsu_strike_price, rsu_amount, rsu_currency, rsu_note, rsu_aud
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        rsu_strike_price, rsu_amount, rsu_currency, rsu_note, rsu_aud,
+                        grant_year_start
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         disclosure_id,
@@ -444,6 +459,7 @@ class Database:
                         grant.get("rsu_currency"),
                         grant.get("rsu_note"),
                         grant.get("rsu_aud"),
+                        grant.get("grant_year_start"),
                     ),
                 )
             conn.execute(
@@ -600,6 +616,7 @@ class Database:
             base_aud=row["base_aud"],
             bonus_aud=row["bonus_aud"],
             fx_rate_date=row["fx_rate_date"],
+            fy_period=row["fy_period"],
         )
 
     @staticmethod
@@ -618,4 +635,5 @@ class Database:
             rsu_currency=row["rsu_currency"],
             rsu_note=row["rsu_note"],
             rsu_aud=row["rsu_aud"],
+            grant_year_start=row["grant_year_start"],
         )

@@ -218,6 +218,31 @@ def test_add_disclosure_persists_options_grant(db: Database):
     assert latest.grants[0].rsu_strike_price == 45.0
 
 
+def test_add_disclosure_persists_fy_period_and_grant_year_start(db: Database):
+    db.upsert_member("U1", "alice")
+    data = dict(
+        DISCLOSURE,
+        fy_period="1 Jul 2026 – 30 Jun 2027",
+        grants=[
+            {
+                "rsu_type": "private",
+                "rsu_amount": 20000,
+                "rsu_currency": "AUD",
+                "rsu_aud": 20000.0,
+                "grant_year_start": 2022,
+            },
+        ],
+    )
+
+    disclosure = db.add_disclosure("U1", data)
+    assert disclosure.fy_period == "1 Jul 2026 – 30 Jun 2027"
+    assert disclosure.grants[0].grant_year_start == 2022
+
+    latest = db.get_latest_disclosure("U1")
+    assert latest.fy_period == "1 Jul 2026 – 30 Jun 2027"
+    assert latest.grants[0].grant_year_start == 2022
+
+
 def test_migrates_grants_table_missing_options_columns(tmp_path):
     """A DB that already has the multi-grant `grants` table (from before the
     options feature existed) should get equity_kind/rsu_strike_price added
@@ -300,3 +325,6 @@ def test_migrates_grants_table_missing_options_columns(tmp_path):
     assert latest.grants[0].equity_kind == "rsu"
     assert latest.grants[0].rsu_strike_price is None
     assert latest.grants[0].rsu_aud == 75000
+    # Same additive migration pass also backfills the FY/grant-year fields.
+    assert latest.fy_period is None
+    assert latest.grants[0].grant_year_start is None

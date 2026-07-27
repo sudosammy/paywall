@@ -68,6 +68,7 @@ def _grant(**kwargs) -> Grant:
         rsu_currency="AUD",
         rsu_note=None,
         rsu_aud=120000,
+        grant_year_start=None,
     )
     defaults.update(kwargs)
     return Grant(**defaults)
@@ -91,6 +92,7 @@ def _disclosure(**kwargs) -> Disclosure:
         base_aud=250000,
         bonus_aud=50000,
         fx_rate_date="2026-07-01",
+        fy_period="1 Jul 2026 – 30 Jun 2027",
     )
     defaults.update(kwargs)
     return Disclosure(**defaults)
@@ -110,6 +112,21 @@ def test_format_disclosure_line_first_bullet_is_base_super_bonus():
     line = format_disclosure_line(_member(), _disclosure(), au_super_pct=12.0)
     bullets = line.split("\n")[1:]
     assert bullets[0] == "- $250k base + 12% super + 20% bonus"
+
+
+def test_format_disclosure_line_shows_fy_period():
+    line = format_disclosure_line(_member(), _disclosure(), au_super_pct=12.0)
+    header = line.split("\n")[0]
+    assert "FY 1 Jul 2026 – 30 Jun 2027, updated 2026-07-01" in header
+
+
+def test_format_disclosure_line_omits_fy_when_not_set():
+    # Legacy disclosures predate this field — must still render cleanly.
+    d = _disclosure(fy_period=None)
+    line = format_disclosure_line(_member(), d, au_super_pct=12.0)
+    header = line.split("\n")[0]
+    assert "FY" not in header
+    assert "_(updated 2026-07-01)_" in header
 
 
 def test_format_disclosure_line_one_bullet_per_grant():
@@ -219,6 +236,37 @@ def test_format_public_grant_with_note_uses_em_dash():
         rsu_note="2024 top-up",
     )
     assert format_grant(g) == "500 NASDAQ:TEAM sh/yr (~A$65k/yr) — 2024 top-up"
+
+
+def test_format_grant_shows_year_start_without_note():
+    g = _grant(
+        rsu_type="public",
+        rsu_ticker="NASDAQ:TEAM",
+        rsu_shares_per_year=500,
+        rsu_share_price=100.0,
+        rsu_share_currency="USD",
+        rsu_amount=None,
+        rsu_currency=None,
+        rsu_aud=65000,
+        grant_year_start=2022,
+    )
+    assert format_grant(g) == "500 NASDAQ:TEAM sh/yr (~A$65k/yr) — 2022"
+
+
+def test_format_grant_combines_year_start_and_note():
+    g = _grant(
+        rsu_type="public",
+        rsu_ticker="NASDAQ:TEAM",
+        rsu_shares_per_year=500,
+        rsu_share_price=100.0,
+        rsu_share_currency="USD",
+        rsu_amount=None,
+        rsu_currency=None,
+        rsu_aud=65000,
+        grant_year_start=2024,
+        rsu_note="top-up",
+    )
+    assert format_grant(g) == "500 NASDAQ:TEAM sh/yr (~A$65k/yr) — 2024: top-up"
 
 
 def test_format_public_options_grant():

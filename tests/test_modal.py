@@ -59,6 +59,7 @@ def _grant_values(index: int, **overrides) -> dict[str, Any]:
 
 def _values(*, grant1: dict[str, Any] | None = None, **overrides):
     base = {
+        "fy_period": {"value": {"value": "1 Jul 2026 – 30 Jun 2027"}},
         "base_amount": {"value": {"value": "250000"}},
         "base_currency": {
             "value": {"selected_option": {"value": "AUD"}}
@@ -141,6 +142,20 @@ def test_missing_base_errors():
     data, errors = parse_submission(values)
     assert data is None
     assert "base_amount" in errors
+
+
+def test_missing_fy_period_errors():
+    values = _values(fy_period={"value": {"value": ""}})
+    data, errors = parse_submission(values)
+    assert data is None
+    assert "fy_period" in errors
+
+
+def test_fy_period_passed_through():
+    values = _values(fy_period={"value": {"value": "1 Jan 2026 – 31 Dec 2026"}})
+    data, errors = parse_submission(values)
+    assert errors == {}
+    assert data["fy_period"] == "1 Jan 2026 – 31 Dec 2026"
 
 
 def test_custom_super_requires_pct():
@@ -348,6 +363,47 @@ def test_public_options_parses_correctly():
     grant = data["grants"][0]
     assert grant["equity_kind"] == "options"
     assert grant["rsu_strike_price"] == 45.0
+
+
+def test_grant_year_start_parses_correctly():
+    values = _values(
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "private"}}},
+            rsu_amount={"value": {"value": "20000"}},
+            grant_year_start={"value": {"value": "2022"}},
+        )
+    )
+    data, errors = parse_submission(values)
+    assert errors == {}
+    assert data["grants"][0]["grant_year_start"] == 2022
+
+
+def test_grant_year_start_rejects_implausible_year():
+    values = _values(
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "private"}}},
+            rsu_amount={"value": {"value": "20000"}},
+            grant_year_start={"value": {"value": "1899"}},
+        )
+    )
+    data, errors = parse_submission(values)
+    assert data is None
+    assert "grant1_grant_year_start" in errors
+
+
+def test_grant_year_start_rejected_when_type_none():
+    values = _values(
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "none"}}},
+            grant_year_start={"value": {"value": "2022"}},
+        )
+    )
+    data, errors = parse_submission(values)
+    assert data is None
+    assert "grant1_grant_year_start" in errors
 
 
 def test_public_options_valuation_is_spread_over_strike(

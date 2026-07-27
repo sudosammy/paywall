@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from app import copy
-from app.db import Disclosure, Grant
+from app.db import Disclosure, Grant, utcnow
 from app.fx import SUPPORTED_CURRENCIES, FxClient
 from app.stocks import SUPPORTED_MARKETS, StockClient, parse_ticker
 
@@ -40,9 +40,17 @@ def _selected_option(currency: str) -> dict[str, Any]:
     }
 
 
+def _default_fy_period() -> str:
+    """Current Australian financial year (1 Jul – 30 Jun), as of today."""
+    today = utcnow().date()
+    start_year = today.year if today.month >= 7 else today.year - 1
+    return f"1 Jul {start_year} – 30 Jun {start_year + 1}"
+
+
 def _initial_from_disclosure(disclosure: Disclosure | None) -> dict[str, Any]:
     if not disclosure:
         return {
+            "fy_period": _default_fy_period(),
             "base_amount": "",
             "base_currency": "AUD",
             "super_type": "on_top_legislated",
@@ -54,6 +62,7 @@ def _initial_from_disclosure(disclosure: Disclosure | None) -> dict[str, Any]:
             "other_text": "",
         }
     return {
+        "fy_period": disclosure.fy_period or _default_fy_period(),
         "base_amount": _num(disclosure.base_amount),
         "base_currency": disclosure.base_currency,
         "super_type": disclosure.super_type,
@@ -70,6 +79,7 @@ def _empty_grant_init(base_currency: str) -> dict[str, Any]:
     return {
         "rsu_type": "none",
         "equity_kind": "rsu",
+        "grant_year_start": "",
         "rsu_ticker": "",
         "rsu_shares_per_year": "",
         "strike_price": "",
@@ -83,6 +93,9 @@ def _grant_init(grant: Grant, base_currency: str) -> dict[str, Any]:
     return {
         "rsu_type": grant.rsu_type,
         "equity_kind": grant.equity_kind,
+        "grant_year_start": (
+            _num(grant.grant_year_start) if grant.grant_year_start is not None else ""
+        ),
         "rsu_ticker": grant.rsu_ticker or "",
         "rsu_shares_per_year": (
             _num(grant.rsu_shares_per_year)
@@ -195,6 +208,16 @@ def _grant_blocks(index: int, init: dict[str, Any]) -> list[dict[str, Any]]:
         },
         {
             "type": "input",
+            "block_id": bid("grant_year_start"),
+            "optional": True,
+            "element": _text_input(
+                placeholder="year this grant started, e.g. 2022",
+                initial=init["grant_year_start"],
+            ),
+            "label": {"type": "plain_text", "text": "Grant year start"},
+        },
+        {
+            "type": "input",
             "block_id": bid("rsu_ticker"),
             "optional": True,
             "element": _text_input(
@@ -232,7 +255,7 @@ def _grant_blocks(index: int, init: dict[str, Any]) -> list[dict[str, Any]]:
             ),
             "label": {
                 "type": "plain_text",
-                "text": "Representative annual value (if private)",
+                "text": "Representative value for this FY (if private)",
             },
         },
         {
@@ -277,11 +300,23 @@ def build_disclosure_modal(disclosure: Disclosure | None = None) -> dict[str, An
         },
         {
             "type": "input",
+            "block_id": "fy_period",
+            "element": _text_input(
+                placeholder="e.g. 1 Jul 2026 – 30 Jun 2027",
+                initial=init["fy_period"],
+            ),
+            "label": {
+                "type": "plain_text",
+                "text": "Financial year this disclosure is for (start – end)",
+            },
+        },
+        {
+            "type": "input",
             "block_id": "base_amount",
             "element": _text_input(
                 placeholder="e.g. 250000", initial=init["base_amount"]
             ),
-            "label": {"type": "plain_text", "text": "Base salary (annual)"},
+            "label": {"type": "plain_text", "text": "Base salary (this financial year)"},
         },
         {
             "type": "input",
@@ -322,7 +357,7 @@ def build_disclosure_modal(disclosure: Disclosure | None = None) -> dict[str, An
                 [
                     ("none", "None"),
                     ("pct_of_base", "% of base"),
-                    ("fixed_amount", "Fixed annual amount"),
+                    ("fixed_amount", "Fixed amount (this FY)"),
                 ],
                 init["bonus_type"],
             ),
@@ -336,7 +371,7 @@ def build_disclosure_modal(disclosure: Disclosure | None = None) -> dict[str, An
                 placeholder="% or amount, e.g. 20 or 32000",
                 initial=init["bonus_value"],
             ),
-            "label": {"type": "plain_text", "text": "Bonus value"},
+            "label": {"type": "plain_text", "text": "Bonus value (this FY)"},
         },
         {
             "type": "input",
@@ -443,6 +478,19 @@ def _parse_grant_slot(
 
     rsu_type = _get_select(values, bid("rsu_type")) or "none"
     equity_kind = _get_select(values, bid("equity_kind")) or "rsu"
+    grant_year_raw = _get_plain(values, bid("grant_year_start"))
+    grant_year_value = _parse_number(
+        grant_year_raw, field=bid("grant_year_start"), errors=errors
+    )
+    grant_year_start: int | None = None
+    if grant_year_value is not None:
+        grant_year_start = int(grant_year_value)
+        current_year = utcnow().year
+        if not (2000 <= grant_year_start <= current_year + 1):
+            errors[bid("grant_year_start")] = (
+                f"Enter a plausible year ({2000}–{current_year + 1})"
+            )
+            grant_year_start = None
     rsu_ticker_raw = _get_plain(values, bid("rsu_ticker"))
     rsu_shares_raw = _get_plain(values, bid("rsu_shares_per_year"))
     rsu_shares_per_year = _parse_number(
@@ -472,6 +520,8 @@ def _parse_grant_slot(
             errors[bid("rsu_amount")] = equity_mismatch
         if strike_price_raw:
             errors[bid("strike_price")] = equity_mismatch
+        if grant_year_raw:
+            errors[bid("grant_year_start")] = equity_mismatch
         return None
     elif rsu_type == "public":
         if rsu_amount_raw:
@@ -538,6 +588,7 @@ def _parse_grant_slot(
     return {
         "rsu_type": rsu_type,
         "equity_kind": equity_kind,
+        "grant_year_start": grant_year_start,
         "rsu_ticker": rsu_ticker,
         "rsu_shares_per_year": rsu_shares_per_year,
         "rsu_strike_price": strike_price,
@@ -556,6 +607,10 @@ def parse_submission(
     be passed straight to ack(response_action="errors").
     """
     errors: dict[str, str] = {}
+
+    fy_period = _get_plain(values, "fy_period") or None
+    if not fy_period:
+        errors["fy_period"] = "Enter the financial year this disclosure is for"
 
     base_raw = _get_plain(values, "base_amount")
     base_amount = _parse_number(base_raw, field="base_amount", errors=errors)
@@ -617,6 +672,7 @@ def parse_submission(
         return None, errors
 
     data = {
+        "fy_period": fy_period,
         "base_amount": base_amount,
         "base_currency": base_currency,
         "super_type": super_type,

@@ -118,20 +118,26 @@ def channel_value_line(total: str, count: int, tax_total: str) -> str:
     )
 
 MODAL_INTRO = (
-    "Time to confess. Non-AUD amounts convert via Frankfurter; equity details are "
-    "below (scroll down — you can list multiple grants)."
+    "Time to confess. *Everything below is for the current financial year* — "
+    "set exactly which one in the field right below (defaults to the current "
+    "AU FY, but override it if your company runs a different cycle). Not last "
+    "year's numbers, not a multi-year average — this FY only. Non-AUD amounts "
+    "convert via Frankfurter; equity details are further down (scroll down — "
+    "you can list multiple grants)."
 )
 
 def equity_section_intro(max_grants: int) -> str:
     return (
-        f"*Equity / RSUs / Options* — got topped up during a performance cycle? "
-        f"List each grant separately below (up to {max_grants}), new-hire grant "
-        f"included. For public equity, enter shares/options vesting *per year* "
-        f"for that grant (not the full multi-year grant) plus a `MARKET:TICKER` "
-        f"— we price it and convert to AUD. Picked Options? Also enter the "
-        f"strike/exercise price — we value the spread over the current share "
-        f"price, not the full share value. Private equity/options is a "
-        f"representative annual dollar value per grant."
+        f"*Equity / RSUs / Options* — same rule as above: value what's vesting "
+        f"*within the financial year you set above*, not a full multi-year grant. "
+        f"Got topped up during a performance cycle? List each grant separately "
+        f"below (up to {max_grants}), new-hire grant included, and tag each with "
+        f"the year it started (*Grant year start*) so it's clear which is which. "
+        f"For public equity, enter shares/options vesting *per year* for that "
+        f"grant plus a `MARKET:TICKER` — we price it and convert to AUD. Picked "
+        f"Options? Also enter the strike/exercise price — we value the spread "
+        f"over the current share price, not the full share value. Private "
+        f"equity/options is a representative value for this FY, per grant."
     )
 
 MODAL_TITLE = "Spill your TC"

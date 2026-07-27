@@ -136,7 +136,11 @@ def format_grant(grant: Grant) -> str:
             + f"/yr equity ({suffix})"
         )
 
-    if grant.rsu_note:
+    if grant.grant_year_start and grant.rsu_note:
+        text = f"{text} — {grant.grant_year_start}: {grant.rsu_note}"
+    elif grant.grant_year_start:
+        text = f"{text} — {grant.grant_year_start}"
+    elif grant.rsu_note:
         text = f"{text} — {grant.rsu_note}"
     return text
 
@@ -159,8 +163,9 @@ def format_disclosure_line(
         else disclosure.created_at.date().isoformat()
     )
     tc = format_aud(total_comp_aud(disclosure, au_super_pct))
+    fy_prefix = f"FY {disclosure.fy_period}, " if disclosure.fy_period else ""
     header = (
-        f"*{member.display_name}* → *~{tc} TC*  _(updated {validated})_"
+        f"*{member.display_name}* → *~{tc} TC*  _({fy_prefix}updated {validated})_"
     )
 
     bullets = [
