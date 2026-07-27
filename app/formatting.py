@@ -41,6 +41,29 @@ def format_money_with_aud(
     return f"{local} (~{aud_paren})"
 
 
+def format_aud(amount: float) -> str:
+    return format_money(amount, "AUD").replace("$", "A$", 1)
+
+
+def total_comp_aud(disclosure: Disclosure, au_super_pct: float) -> float:
+    """Base + super (if paid on top) + bonus + all equity grants, all in AUD.
+
+    Super that's 'included' in base or 'none' contributes nothing extra —
+    it's either already counted in base_aud or doesn't exist.
+    """
+    if disclosure.super_type == "on_top_legislated":
+        super_amount = disclosure.base_aud * (au_super_pct / 100.0)
+    elif disclosure.super_type == "custom_pct":
+        pct = disclosure.super_pct if disclosure.super_pct is not None else au_super_pct
+        super_amount = disclosure.base_aud * (pct / 100.0)
+    else:
+        super_amount = 0.0
+
+    bonus = disclosure.bonus_aud or 0.0
+    equity = sum(g.rsu_aud or 0.0 for g in disclosure.grants)
+    return disclosure.base_aud + super_amount + bonus + equity
+
+
 def format_super(disclosure: Disclosure, au_super_pct: float) -> str:
     if disclosure.super_type == "on_top_legislated":
         return f"{au_super_pct:g}% super"
@@ -129,7 +152,11 @@ def format_disclosure_line(
         if member.last_validated_at
         else disclosure.created_at.date().isoformat()
     )
-    return f"*{member.display_name}*: {' + '.join(parts)}  _(updated {validated})_"
+    tc = format_aud(total_comp_aud(disclosure, au_super_pct))
+    return (
+        f"*{member.display_name}*: {' + '.join(parts)} → *~{tc} TC*"
+        f"  _(updated {validated})_"
+    )
 
 
 def build_pinned_message(
@@ -140,15 +167,22 @@ def build_pinned_message(
 ) -> str:
     if not rows:
         body = copy.PINNED_EMPTY
+        channel_value = ""
     else:
         ordered = sorted(rows, key=lambda pair: pair[1].base_aud, reverse=True)
         body = "\n".join(
             format_disclosure_line(m, d, au_super_pct=au_super_pct) for m, d in ordered
         )
+        channel_total = sum(
+            total_comp_aud(d, au_super_pct) for _, d in ordered
+        )
+        channel_value = "\n\n" + copy.channel_value_line(
+            f"~{format_aud(channel_total)}", len(ordered)
+        )
 
     stamp = (generated_at or datetime.now(timezone.utc)).strftime("%Y-%m-%d %H:%M UTC")
     footer = f"\n\n{copy.PINNED_FOOTER_REBUILT.format(stamp=stamp)}"
-    return f"{copy.PINNED_HEADER}\n{body}{footer}"
+    return f"{copy.PINNED_HEADER}\n{body}{channel_value}{footer}"
 
 
 def due_date(last_validated_at: datetime, revalidate_days: int) -> datetime:

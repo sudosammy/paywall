@@ -8,6 +8,7 @@ from app.formatting import (
     format_grants,
     format_money,
     format_money_with_aud,
+    total_comp_aud,
 )
 
 
@@ -93,7 +94,53 @@ def test_format_disclosure_line():
     assert "12% super" in line
     assert "20% bonus" in line
     assert "$120k/yr equity (private)" in line
+    # 250k base + 30k super (12%) + 50k bonus + 120k equity
+    assert "~A$450k TC" in line
     assert "updated 2026-07-01" in line
+
+
+def test_total_comp_aud_on_top_super():
+    d = _disclosure()  # base 250k, 12% on-top super, 50k bonus, 120k equity
+    assert total_comp_aud(d, au_super_pct=12.0) == 450000
+
+
+def test_total_comp_aud_included_super_adds_nothing_extra():
+    d = _disclosure(
+        super_type="included",
+        bonus_type="none",
+        bonus_value=None,
+        bonus_aud=None,
+        grants=[],
+    )
+    assert total_comp_aud(d, au_super_pct=12.0) == 250000
+
+
+def test_total_comp_aud_custom_super_pct():
+    d = _disclosure(
+        base_amount=200000,
+        base_aud=200000,
+        super_type="custom_pct",
+        super_pct=15,
+        bonus_type="none",
+        bonus_value=None,
+        bonus_aud=None,
+        grants=[],
+    )
+    assert total_comp_aud(d, au_super_pct=12.0) == 230000
+
+
+def test_total_comp_aud_multiple_grants_summed():
+    d = _disclosure(
+        super_type="none",
+        bonus_type="none",
+        bonus_value=None,
+        bonus_aud=None,
+        grants=[
+            _grant(id=1, rsu_aud=65000),
+            _grant(id=2, rsu_aud=26000),
+        ],
+    )
+    assert total_comp_aud(d, au_super_pct=12.0) == 250000 + 65000 + 26000
 
 
 def test_format_no_grants():
@@ -182,6 +229,32 @@ def test_build_pinned_message_footer():
     )
     assert msg.startswith("*The board*")
     assert "Last rebuilt 2026-07-26 04:00 UTC" in msg
+
+
+def test_build_pinned_message_channel_value():
+    plain = dict(super_type="none", bonus_type="none", bonus_value=None, bonus_aud=None, grants=[])
+    d1 = _disclosure(base_amount=200000, base_aud=200000, **plain)
+    d2 = _disclosure(id=2, slack_user_id="U2", base_amount=300000, base_aud=300000, **plain)
+    msg = build_pinned_message(
+        [
+            (_member(), d1),
+            (_member(slack_user_id="U2", display_name="bob"), d2),
+        ],
+        au_super_pct=12.0,
+        generated_at=datetime(2026, 7, 26, 4, 0, tzinfo=timezone.utc),
+    )
+    assert "Channel value: ~A$500k TC across 2 disclosures" in msg
+    assert "hoard responsibly" in msg
+
+
+def test_build_pinned_message_empty_has_no_channel_value():
+    msg = build_pinned_message(
+        [],
+        au_super_pct=12.0,
+        generated_at=datetime(2026, 7, 26, 4, 0, tzinfo=timezone.utc),
+    )
+    assert "Crickets" in msg
+    assert "Channel value" not in msg
 
 
 def test_build_pinned_message_orders_by_base_aud_desc():

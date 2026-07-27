@@ -110,6 +110,10 @@ PINNED_HEADER = "*The board*"
 PINNED_EMPTY = "_Crickets. Nobody's spilled yet._"
 PINNED_FOOTER_REBUILT = "_Last rebuilt {stamp}_"
 
+
+def channel_value_line(total: str, count: int) -> str:
+    return f"*Channel value: {total} TC across {count} disclosures* — hoard responsibly."
+
 MODAL_INTRO = (
     "Time to confess. Non-AUD amounts convert via Wise; equity details are "
     "below (scroll down — you can list multiple grants)."
