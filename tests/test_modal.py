@@ -5,7 +5,7 @@ from pytest_httpx import HTTPXMock
 
 from app.db import Database
 from app.fx import WISE_RATES_URL, FxClient
-from app.modal import apply_fx, build_disclosure_modal, parse_submission
+from app.modal import MAX_GRANTS, apply_fx, build_disclosure_modal, parse_submission
 from app.stocks import StockClient
 
 
@@ -31,7 +31,29 @@ class FakeYahooResponse:
             raise RuntimeError(f"HTTP {self.status_code}")
 
 
-def _values(**overrides):
+def _empty_grant_values(index: int) -> dict[str, Any]:
+    return {
+        f"grant{index}_rsu_type": {
+            "value": {"selected_option": {"value": "none"}}
+        },
+        f"grant{index}_rsu_ticker": {"value": {"value": ""}},
+        f"grant{index}_rsu_shares_per_year": {"value": {"value": ""}},
+        f"grant{index}_rsu_amount": {"value": {"value": ""}},
+        f"grant{index}_rsu_currency": {
+            "value": {"selected_option": {"value": "AUD"}}
+        },
+        f"grant{index}_rsu_note": {"value": {"value": ""}},
+    }
+
+
+def _grant_values(index: int, **overrides) -> dict[str, Any]:
+    base = _empty_grant_values(index)
+    for key, value in overrides.items():
+        base[f"grant{index}_{key}"] = value
+    return base
+
+
+def _values(*, grant1: dict[str, Any] | None = None, **overrides):
     base = {
         "base_amount": {"value": {"value": "250000"}},
         "base_currency": {
@@ -49,18 +71,12 @@ def _values(**overrides):
             "value": {"selected_option": {"value": "AUD"}}
         },
         "bonus_note": {"value": {"value": ""}},
-        "rsu_type": {
-            "value": {"selected_option": {"value": "private"}}
-        },
-        "rsu_ticker": {"value": {"value": ""}},
-        "rsu_shares_per_year": {"value": {"value": ""}},
-        "rsu_amount": {"value": {"value": "120000"}},
-        "rsu_currency": {
-            "value": {"selected_option": {"value": "AUD"}}
-        },
-        "rsu_note": {"value": {"value": ""}},
         "other_text": {"value": {"value": ""}},
     }
+    for i in range(1, MAX_GRANTS + 1):
+        base.update(_empty_grant_values(i))
+    if grant1:
+        base.update(grant1)
     base.update(overrides)
     return base
 
@@ -78,30 +94,42 @@ def stocks(tmp_path) -> StockClient:
 
 
 def test_valid_aud_submission(fx: FxClient, stocks: StockClient):
-    data, errors = parse_submission(_values())
+    values = _values(
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "private"}}},
+            rsu_amount={"value": {"value": "120000"}},
+        )
+    )
+    data, errors = parse_submission(values)
     assert errors == {}
     assert data is not None
     assert data["base_amount"] == 250000
     assert data["bonus_type"] == "pct_of_base"
-    assert data["rsu_type"] == "private"
+    assert len(data["grants"]) == 1
+    assert data["grants"][0]["rsu_type"] == "private"
 
     full = apply_fx(data, fx, stocks)
     assert full["base_aud"] == 250000
     assert full["bonus_aud"] == 50000
-    assert full["rsu_aud"] == 120000
+    assert full["grants"][0]["rsu_aud"] == 120000
 
 
 def test_number_parsing_tolerates_symbols(fx: FxClient, stocks: StockClient):
     values = _values(
         base_amount={"value": {"value": "$232,900"}},
         bonus_value={"value": {"value": "20%"}},
-        rsu_amount={"value": {"value": "120k"}},
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "private"}}},
+            rsu_amount={"value": {"value": "120k"}},
+        ),
     )
     data, errors = parse_submission(values)
     assert errors == {}
     assert data["base_amount"] == 232900
     assert data["bonus_value"] == 20
-    assert data["rsu_amount"] == 120000
+    assert data["grants"][0]["rsu_amount"] == 120000
 
 
 def test_missing_base_errors():
@@ -123,63 +151,74 @@ def test_custom_super_requires_pct():
 
 def test_public_requires_ticker():
     values = _values(
-        rsu_type={"value": {"selected_option": {"value": "public"}}},
-        rsu_ticker={"value": {"value": ""}},
-        rsu_shares_per_year={"value": {"value": "500"}},
-        rsu_amount={"value": {"value": ""}},
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "public"}}},
+            rsu_ticker={"value": {"value": ""}},
+            rsu_shares_per_year={"value": {"value": "500"}},
+        )
     )
     data, errors = parse_submission(values)
     assert data is None
-    assert "rsu_ticker" in errors
+    assert "grant1_rsu_ticker" in errors
 
 
 def test_public_rejects_bad_market():
     values = _values(
-        rsu_type={"value": {"selected_option": {"value": "public"}}},
-        rsu_ticker={"value": {"value": "FOO:BAR"}},
-        rsu_shares_per_year={"value": {"value": "500"}},
-        rsu_amount={"value": {"value": ""}},
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "public"}}},
+            rsu_ticker={"value": {"value": "FOO:BAR"}},
+            rsu_shares_per_year={"value": {"value": "500"}},
+        )
     )
     data, errors = parse_submission(values)
     assert data is None
-    assert "rsu_ticker" in errors
-    assert "NASDAQ" in errors["rsu_ticker"]
+    assert "grant1_rsu_ticker" in errors
+    assert "NASDAQ" in errors["grant1_rsu_ticker"]
 
 
 def test_public_requires_shares():
     values = _values(
-        rsu_type={"value": {"selected_option": {"value": "public"}}},
-        rsu_ticker={"value": {"value": "NASDAQ:TEAM"}},
-        rsu_shares_per_year={"value": {"value": ""}},
-        rsu_amount={"value": {"value": ""}},
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "public"}}},
+            rsu_ticker={"value": {"value": "NASDAQ:TEAM"}},
+            rsu_shares_per_year={"value": {"value": ""}},
+        )
     )
     data, errors = parse_submission(values)
     assert data is None
-    assert "rsu_shares_per_year" in errors
+    assert "grant1_rsu_shares_per_year" in errors
 
 
 def test_private_requires_amount():
     values = _values(
-        rsu_type={"value": {"selected_option": {"value": "private"}}},
-        rsu_amount={"value": {"value": ""}},
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "private"}}},
+            rsu_amount={"value": {"value": ""}},
+        )
     )
     data, errors = parse_submission(values)
     assert data is None
-    assert "rsu_amount" in errors
+    assert "grant1_rsu_amount" in errors
 
 
 def test_public_normalizes_ticker():
     values = _values(
-        rsu_type={"value": {"selected_option": {"value": "public"}}},
-        rsu_ticker={"value": {"value": "nasdaq:team"}},
-        rsu_shares_per_year={"value": {"value": "500"}},
-        rsu_amount={"value": {"value": ""}},
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "public"}}},
+            rsu_ticker={"value": {"value": "nasdaq:team"}},
+            rsu_shares_per_year={"value": {"value": "500"}},
+        )
     )
     data, errors = parse_submission(values)
     assert errors == {}
-    assert data["rsu_ticker"] == "NASDAQ:TEAM"
-    assert data["rsu_shares_per_year"] == 500
-    assert data["rsu_amount"] is None
+    assert data["grants"][0]["rsu_ticker"] == "NASDAQ:TEAM"
+    assert data["grants"][0]["rsu_shares_per_year"] == 500
+    assert data["grants"][0]["rsu_amount"] is None
 
 
 def test_public_valuation(
@@ -211,32 +250,95 @@ def test_public_valuation(
     values = _values(
         bonus_type={"value": {"selected_option": {"value": "none"}}},
         bonus_value={"value": {"value": ""}},
-        rsu_type={"value": {"selected_option": {"value": "public"}}},
-        rsu_ticker={"value": {"value": "NASDAQ:TEAM"}},
-        rsu_shares_per_year={"value": {"value": "500"}},
-        rsu_amount={"value": {"value": ""}},
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "public"}}},
+            rsu_ticker={"value": {"value": "NASDAQ:TEAM"}},
+            rsu_shares_per_year={"value": {"value": "500"}},
+        ),
     )
     data, errors = parse_submission(values)
     assert errors == {}
     full = apply_fx(data, fx, stocks)
     # 500 shares * $100 = $50,000 USD * 1.5 = A$75,000
-    assert full["rsu_share_price"] == 100.0
-    assert full["rsu_share_currency"] == "USD"
-    assert full["rsu_aud"] == 75000.0
+    grant = full["grants"][0]
+    assert grant["rsu_share_price"] == 100.0
+    assert grant["rsu_share_currency"] == "USD"
+    assert grant["rsu_aud"] == 75000.0
+
+
+def test_multiple_concurrent_grants(
+    fx: FxClient, stocks: StockClient, httpx_mock: HTTPXMock, monkeypatch
+):
+    monkeypatch.setattr(
+        "app.http_retry._impersonated_get",
+        lambda *a, **k: FakeYahooResponse(
+            json_data={
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {
+                                "regularMarketPrice": 100.0,
+                                "currency": "USD",
+                                "regularMarketTime": 1720000000,
+                            }
+                        }
+                    ],
+                    "error": None,
+                }
+            }
+        ),
+    )
+    httpx_mock.add_response(
+        url=f"{WISE_RATES_URL}?source=USD&target=AUD",
+        json=[{"rate": 1.5, "time": "2026-07-26T00:00:00Z"}],
+    )
+    values = _values(
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "public"}}},
+            rsu_ticker={"value": {"value": "NASDAQ:TEAM"}},
+            rsu_shares_per_year={"value": {"value": "500"}},
+            rsu_note={"value": {"value": "new-hire grant"}},
+        ),
+    )
+    values.update(
+        _grant_values(
+            2,
+            rsu_type={"value": {"selected_option": {"value": "private"}}},
+            rsu_amount={"value": {"value": "20000"}},
+            rsu_note={"value": {"value": "2024 top-up"}},
+        )
+    )
+    data, errors = parse_submission(values)
+    assert errors == {}
+    assert len(data["grants"]) == 2
+
+    full = apply_fx(data, fx, stocks)
+    assert len(full["grants"]) == 2
+    grant1, grant2 = full["grants"]
+    assert grant1["rsu_type"] == "public"
+    assert grant1["rsu_aud"] == 75000.0
+    assert grant1["rsu_note"] == "new-hire grant"
+    assert grant2["rsu_type"] == "private"
+    assert grant2["rsu_aud"] == 20000
+    assert grant2["rsu_note"] == "2024 top-up"
 
 
 def test_none_rsu_rejects_filled_shares():
     values = _values(
-        rsu_type={"value": {"selected_option": {"value": "none"}}},
-        rsu_ticker={"value": {"value": "NASDAQ:TEAM"}},
-        rsu_shares_per_year={"value": {"value": "400"}},
-        rsu_amount={"value": {"value": ""}},
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "none"}}},
+            rsu_ticker={"value": {"value": "NASDAQ:TEAM"}},
+            rsu_shares_per_year={"value": {"value": "400"}},
+        )
     )
     data, errors = parse_submission(values)
     assert data is None
-    assert "rsu_ticker" in errors
-    assert "rsu_shares_per_year" in errors
-    assert "Public" in errors["rsu_shares_per_year"]
+    assert "grant1_rsu_ticker" in errors
+    assert "grant1_rsu_shares_per_year" in errors
+    assert "Public" in errors["grant1_rsu_shares_per_year"]
 
 
 def test_none_bonus_rejects_filled_value():
@@ -261,27 +363,33 @@ def test_non_custom_super_rejects_filled_pct():
 
 def test_public_rejects_private_amount():
     values = _values(
-        rsu_type={"value": {"selected_option": {"value": "public"}}},
-        rsu_ticker={"value": {"value": "NASDAQ:TEAM"}},
-        rsu_shares_per_year={"value": {"value": "500"}},
-        rsu_amount={"value": {"value": "120000"}},
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "public"}}},
+            rsu_ticker={"value": {"value": "NASDAQ:TEAM"}},
+            rsu_shares_per_year={"value": {"value": "500"}},
+            rsu_amount={"value": {"value": "120000"}},
+        )
     )
     data, errors = parse_submission(values)
     assert data is None
-    assert "rsu_amount" in errors
+    assert "grant1_rsu_amount" in errors
 
 
 def test_private_rejects_ticker_and_shares():
     values = _values(
-        rsu_type={"value": {"selected_option": {"value": "private"}}},
-        rsu_ticker={"value": {"value": "NASDAQ:TEAM"}},
-        rsu_shares_per_year={"value": {"value": "400"}},
-        rsu_amount={"value": {"value": "120000"}},
+        grant1=_grant_values(
+            1,
+            rsu_type={"value": {"selected_option": {"value": "private"}}},
+            rsu_ticker={"value": {"value": "NASDAQ:TEAM"}},
+            rsu_shares_per_year={"value": {"value": "400"}},
+            rsu_amount={"value": {"value": "120000"}},
+        )
     )
     data, errors = parse_submission(values)
     assert data is None
-    assert "rsu_ticker" in errors
-    assert "rsu_shares_per_year" in errors
+    assert "grant1_rsu_ticker" in errors
+    assert "grant1_rsu_shares_per_year" in errors
 
 
 def test_usd_conversion(fx: FxClient, stocks: StockClient, httpx_mock: HTTPXMock):
@@ -294,15 +402,13 @@ def test_usd_conversion(fx: FxClient, stocks: StockClient, httpx_mock: HTTPXMock
         base_currency={"value": {"selected_option": {"value": "USD"}}},
         bonus_type={"value": {"selected_option": {"value": "none"}}},
         bonus_value={"value": {"value": ""}},
-        rsu_type={"value": {"selected_option": {"value": "none"}}},
-        rsu_amount={"value": {"value": ""}},
     )
     data, errors = parse_submission(values)
     assert errors == {}
     full = apply_fx(data, fx, stocks)
     assert full["base_aud"] == 150000.0
     assert full["bonus_aud"] is None
-    assert full["rsu_aud"] is None
+    assert full["grants"] == []
 
 
 def test_modal_omits_empty_initial_values():
@@ -311,3 +417,10 @@ def test_modal_omits_empty_initial_values():
         element = block.get("element")
         if element and element["type"] == "plain_text_input":
             assert element.get("initial_value") != ""
+
+
+def test_modal_has_slot_for_each_grant():
+    view = build_disclosure_modal(None)
+    block_ids = {b["block_id"] for b in view["blocks"] if "block_id" in b}
+    for i in range(1, MAX_GRANTS + 1):
+        assert f"grant{i}_rsu_type" in block_ids

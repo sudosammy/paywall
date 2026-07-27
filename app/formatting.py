@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from app import copy
 from app.config import Config
-from app.db import Disclosure, Member
+from app.db import Disclosure, Grant, Member
 
 
 def format_money(amount: float, currency: str) -> str:
@@ -72,34 +72,38 @@ def format_bonus(disclosure: Disclosure) -> str:
     return text
 
 
-def format_rsu(disclosure: Disclosure) -> str:
-    if disclosure.rsu_type == "none":
-        text = "$0 stock"
-    elif disclosure.rsu_type == "public":
-        shares = disclosure.rsu_shares_per_year or 0
+def format_grant(grant: Grant) -> str:
+    if grant.rsu_type == "public":
+        shares = grant.rsu_shares_per_year or 0
         if shares == int(shares):
             shares_text = f"{int(shares)}"
         else:
             shares_text = f"{shares:g}"
-        ticker = disclosure.rsu_ticker or "?"
-        if disclosure.rsu_aud is not None:
-            aud = format_money(disclosure.rsu_aud, "AUD").replace("$", "A$", 1)
+        ticker = grant.rsu_ticker or "?"
+        if grant.rsu_aud is not None:
+            aud = format_money(grant.rsu_aud, "AUD").replace("$", "A$", 1)
             text = f"{shares_text} {ticker} sh/yr (~{aud}/yr)"
         else:
             text = f"{shares_text} {ticker} sh/yr"
     else:
         # private
-        currency = disclosure.rsu_currency or disclosure.base_currency
+        currency = grant.rsu_currency or "AUD"
         text = (
-            format_money_with_aud(
-                disclosure.rsu_amount or 0, currency, disclosure.rsu_aud
-            )
+            format_money_with_aud(grant.rsu_amount or 0, currency, grant.rsu_aud)
             + "/yr equity (private)"
         )
 
-    if disclosure.rsu_note:
-        text = f"{text} ({disclosure.rsu_note})"
+    if grant.rsu_note:
+        text = f"{text} ({grant.rsu_note})"
     return text
+
+
+def format_grants(grants: list[Grant]) -> str:
+    """Multiple concurrent grants (e.g. yearly top-ups) are itemized rather
+    than summed, so individual share counts/tickers stay visible on the board."""
+    if not grants:
+        return "$0 stock"
+    return " + ".join(format_grant(g) for g in grants)
 
 
 def format_disclosure_line(
@@ -115,7 +119,7 @@ def format_disclosure_line(
         f"{base} base",
         format_super(disclosure, au_super_pct),
         format_bonus(disclosure),
-        format_rsu(disclosure),
+        format_grants(disclosure.grants),
     ]
     if disclosure.other_text:
         parts.append(disclosure.other_text.strip())

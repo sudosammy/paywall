@@ -5,8 +5,9 @@ Cheeky Slack enforcer for a private salary channel: structured disclosures, a pi
 ## Features
 
 - Structured disclosure modal (base, super, bonus, RSUs/equity, other)
-- Public equity: enter `MARKET:TICKER` + shares vesting per year; valued via [Yahoo Finance](https://finance.yahoo.com/) and converted to AUD
-- Private equity: representative annual dollar value
+- Up to 4 concurrent equity grants per person (e.g. a new-hire grant plus yearly top-ups), each valued and shown separately
+- Public equity: enter `MARKET:TICKER` + shares vesting per year per grant; valued via [Yahoo Finance](https://finance.yahoo.com/) and converted to AUD
+- Private equity: representative annual dollar value per grant
 - Non-AUD amounts converted to AUD (shown as `USD 289k (~A$437k)`)
 - Bot-owned pinned summary message, rebuilt on every change
 - New joiners must disclose within **14 days** (nagged every 3 days)

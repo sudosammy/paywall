@@ -40,6 +40,21 @@ class Member:
 
 
 @dataclass
+class Grant:
+    id: int
+    disclosure_id: int
+    rsu_type: str
+    rsu_ticker: str | None
+    rsu_shares_per_year: float | None
+    rsu_share_price: float | None
+    rsu_share_currency: str | None
+    rsu_amount: float | None
+    rsu_currency: str | None
+    rsu_note: str | None
+    rsu_aud: float | None
+
+
+@dataclass
 class Disclosure:
     id: int
     slack_user_id: str
@@ -52,18 +67,10 @@ class Disclosure:
     bonus_value: float | None
     bonus_currency: str | None
     bonus_note: str | None
-    rsu_type: str
-    rsu_ticker: str | None
-    rsu_shares_per_year: float | None
-    rsu_share_price: float | None
-    rsu_share_currency: str | None
-    rsu_amount: float | None
-    rsu_currency: str | None
-    rsu_note: str | None
+    grants: list[Grant]
     other_text: str | None
     base_aud: float
     bonus_aud: float | None
-    rsu_aud: float | None
     fx_rate_date: str | None
 
 
@@ -106,6 +113,11 @@ class Database:
 
     def _init_schema(self) -> None:
         with self.connect() as conn:
+            had_grants_table = bool(
+                conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='grants'"
+                ).fetchone()
+            )
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS members (
@@ -129,6 +141,23 @@ class Database:
                     bonus_value REAL,
                     bonus_currency TEXT,
                     bonus_note TEXT,
+                    other_text TEXT,
+                    base_aud REAL NOT NULL,
+                    bonus_aud REAL,
+                    fx_rate_date TEXT,
+                    FOREIGN KEY (slack_user_id) REFERENCES members(slack_user_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_disclosures_user_created
+                    ON disclosures(slack_user_id, created_at DESC);
+
+                -- A disclosure can carry multiple concurrent equity grants
+                -- (e.g. a new-hire grant plus yearly top-ups), each valued
+                -- independently since tickers/vesting/quantities can differ.
+                CREATE TABLE IF NOT EXISTS grants (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    disclosure_id INTEGER NOT NULL,
+                    slot INTEGER NOT NULL,
                     rsu_type TEXT NOT NULL,
                     rsu_ticker TEXT,
                     rsu_shares_per_year REAL,
@@ -137,16 +166,12 @@ class Database:
                     rsu_amount REAL,
                     rsu_currency TEXT,
                     rsu_note TEXT,
-                    other_text TEXT,
-                    base_aud REAL NOT NULL,
-                    bonus_aud REAL,
                     rsu_aud REAL,
-                    fx_rate_date TEXT,
-                    FOREIGN KEY (slack_user_id) REFERENCES members(slack_user_id)
+                    FOREIGN KEY (disclosure_id) REFERENCES disclosures(id)
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_disclosures_user_created
-                    ON disclosures(slack_user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_grants_disclosure
+                    ON grants(disclosure_id, slot);
 
                 CREATE TABLE IF NOT EXISTS fx_rates (
                     source TEXT PRIMARY KEY,
@@ -166,6 +191,52 @@ class Database:
                     value TEXT NOT NULL
                 );
                 """
+            )
+            if not had_grants_table:
+                self._migrate_legacy_single_grant(conn)
+
+    @staticmethod
+    def _migrate_legacy_single_grant(conn: sqlite3.Connection) -> None:
+        """One-time backfill: pre-multi-grant DBs kept a single rsu_* set of
+        columns directly on `disclosures`. Copy any such data into the new
+        `grants` table (slot 1) so it isn't lost from the board. No-op on a
+        fresh DB or one already past this migration (grants table pre-existed).
+        """
+        legacy_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(disclosures)").fetchall()
+        }
+        if "rsu_type" not in legacy_cols:
+            return
+        rows = conn.execute(
+            """
+            SELECT id, rsu_type, rsu_ticker, rsu_shares_per_year, rsu_share_price,
+                   rsu_share_currency, rsu_amount, rsu_currency, rsu_note, rsu_aud
+            FROM disclosures
+            WHERE rsu_type IS NOT NULL AND rsu_type != 'none'
+            """
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                """
+                INSERT INTO grants (
+                    disclosure_id, slot, rsu_type, rsu_ticker, rsu_shares_per_year,
+                    rsu_share_price, rsu_share_currency, rsu_amount, rsu_currency,
+                    rsu_note, rsu_aud
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["id"],
+                    row["rsu_type"],
+                    row["rsu_ticker"],
+                    row["rsu_shares_per_year"],
+                    row["rsu_share_price"],
+                    row["rsu_share_currency"],
+                    row["rsu_amount"],
+                    row["rsu_currency"],
+                    row["rsu_note"],
+                    row["rsu_aud"],
+                ),
             )
 
     # --- settings ---
@@ -307,11 +378,8 @@ class Database:
                     base_amount, base_currency,
                     super_type, super_pct,
                     bonus_type, bonus_value, bonus_currency, bonus_note,
-                    rsu_type, rsu_ticker, rsu_shares_per_year,
-                    rsu_share_price, rsu_share_currency,
-                    rsu_amount, rsu_currency, rsu_note,
-                    other_text, base_aud, bonus_aud, rsu_aud, fx_rate_date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    other_text, base_aud, bonus_aud, fx_rate_date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     slack_user_id,
@@ -324,22 +392,36 @@ class Database:
                     data.get("bonus_value"),
                     data.get("bonus_currency"),
                     data.get("bonus_note"),
-                    data["rsu_type"],
-                    data.get("rsu_ticker"),
-                    data.get("rsu_shares_per_year"),
-                    data.get("rsu_share_price"),
-                    data.get("rsu_share_currency"),
-                    data.get("rsu_amount"),
-                    data.get("rsu_currency"),
-                    data.get("rsu_note"),
                     data.get("other_text"),
                     data["base_aud"],
                     data.get("bonus_aud"),
-                    data.get("rsu_aud"),
                     data.get("fx_rate_date"),
                 ),
             )
             disclosure_id = cur.lastrowid
+            for slot, grant in enumerate(data.get("grants") or [], start=1):
+                conn.execute(
+                    """
+                    INSERT INTO grants (
+                        disclosure_id, slot, rsu_type, rsu_ticker, rsu_shares_per_year,
+                        rsu_share_price, rsu_share_currency, rsu_amount, rsu_currency,
+                        rsu_note, rsu_aud
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        disclosure_id,
+                        slot,
+                        grant["rsu_type"],
+                        grant.get("rsu_ticker"),
+                        grant.get("rsu_shares_per_year"),
+                        grant.get("rsu_share_price"),
+                        grant.get("rsu_share_currency"),
+                        grant.get("rsu_amount"),
+                        grant.get("rsu_currency"),
+                        grant.get("rsu_note"),
+                        grant.get("rsu_aud"),
+                    ),
+                )
             conn.execute(
                 """
                 UPDATE members
@@ -357,7 +439,10 @@ class Database:
             row = conn.execute(
                 "SELECT * FROM disclosures WHERE id = ?", (disclosure_id,)
             ).fetchone()
-            return self._row_to_disclosure(row) if row else None
+            if not row:
+                return None
+            grants = self._load_grants(conn, disclosure_id)
+            return self._row_to_disclosure(row, grants)
 
     def get_latest_disclosure(self, slack_user_id: str) -> Disclosure | None:
         with self.connect() as conn:
@@ -370,7 +455,18 @@ class Database:
                 """,
                 (slack_user_id,),
             ).fetchone()
-            return self._row_to_disclosure(row) if row else None
+            if not row:
+                return None
+            grants = self._load_grants(conn, row["id"])
+            return self._row_to_disclosure(row, grants)
+
+    @staticmethod
+    def _load_grants(conn: sqlite3.Connection, disclosure_id: int) -> list[Grant]:
+        rows = conn.execute(
+            "SELECT * FROM grants WHERE disclosure_id = ? ORDER BY slot",
+            (disclosure_id,),
+        ).fetchall()
+        return [Database._row_to_grant(r) for r in rows]
 
     def list_latest_disclosures_for_active(self) -> list[tuple[Member, Disclosure]]:
         members = self.list_active_members()
@@ -462,7 +558,7 @@ class Database:
         )
 
     @staticmethod
-    def _row_to_disclosure(row: sqlite3.Row) -> Disclosure:
+    def _row_to_disclosure(row: sqlite3.Row, grants: list[Grant]) -> Disclosure:
         return Disclosure(
             id=row["id"],
             slack_user_id=row["slack_user_id"],
@@ -475,6 +571,18 @@ class Database:
             bonus_value=row["bonus_value"],
             bonus_currency=row["bonus_currency"],
             bonus_note=row["bonus_note"],
+            grants=grants,
+            other_text=row["other_text"],
+            base_aud=row["base_aud"],
+            bonus_aud=row["bonus_aud"],
+            fx_rate_date=row["fx_rate_date"],
+        )
+
+    @staticmethod
+    def _row_to_grant(row: sqlite3.Row) -> Grant:
+        return Grant(
+            id=row["id"],
+            disclosure_id=row["disclosure_id"],
             rsu_type=row["rsu_type"],
             rsu_ticker=row["rsu_ticker"],
             rsu_shares_per_year=row["rsu_shares_per_year"],
@@ -483,9 +591,5 @@ class Database:
             rsu_amount=row["rsu_amount"],
             rsu_currency=row["rsu_currency"],
             rsu_note=row["rsu_note"],
-            other_text=row["other_text"],
-            base_aud=row["base_aud"],
-            bonus_aud=row["bonus_aud"],
             rsu_aud=row["rsu_aud"],
-            fx_rate_date=row["fx_rate_date"],
         )
