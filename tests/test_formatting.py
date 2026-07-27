@@ -1,12 +1,13 @@
 from datetime import datetime, timezone
 
-from app.db import Disclosure, Member
+from app.db import Disclosure, Grant, Member
 from app.formatting import (
     build_pinned_message,
     format_disclosure_line,
+    format_grant,
+    format_grants,
     format_money,
     format_money_with_aud,
-    format_rsu,
 )
 
 
@@ -44,6 +45,24 @@ def _member(**kwargs) -> Member:
     return Member(**defaults)
 
 
+def _grant(**kwargs) -> Grant:
+    defaults = dict(
+        id=1,
+        disclosure_id=1,
+        rsu_type="private",
+        rsu_ticker=None,
+        rsu_shares_per_year=None,
+        rsu_share_price=None,
+        rsu_share_currency=None,
+        rsu_amount=120000,
+        rsu_currency="AUD",
+        rsu_note=None,
+        rsu_aud=120000,
+    )
+    defaults.update(kwargs)
+    return Grant(**defaults)
+
+
 def _disclosure(**kwargs) -> Disclosure:
     defaults = dict(
         id=1,
@@ -57,18 +76,10 @@ def _disclosure(**kwargs) -> Disclosure:
         bonus_value=20,
         bonus_currency="AUD",
         bonus_note=None,
-        rsu_type="private",
-        rsu_ticker=None,
-        rsu_shares_per_year=None,
-        rsu_share_price=None,
-        rsu_share_currency=None,
-        rsu_amount=120000,
-        rsu_currency="AUD",
-        rsu_note=None,
+        grants=[_grant()],
         other_text=None,
         base_aud=250000,
         bonus_aud=50000,
-        rsu_aud=120000,
         fx_rate_date="2026-07-01",
     )
     defaults.update(kwargs)
@@ -85,8 +96,13 @@ def test_format_disclosure_line():
     assert "updated 2026-07-01" in line
 
 
-def test_format_public_rsu():
-    d = _disclosure(
+def test_format_no_grants():
+    d = _disclosure(grants=[])
+    assert format_grants(d.grants) == "$0 stock"
+
+
+def test_format_public_grant():
+    g = _grant(
         rsu_type="public",
         rsu_ticker="NASDAQ:TEAM",
         rsu_shares_per_year=500,
@@ -96,7 +112,41 @@ def test_format_public_rsu():
         rsu_currency=None,
         rsu_aud=65000,
     )
-    assert format_rsu(d) == "500 NASDAQ:TEAM sh/yr (~A$65k/yr)"
+    assert format_grant(g) == "500 NASDAQ:TEAM sh/yr (~A$65k/yr)"
+
+
+def test_format_multiple_concurrent_grants():
+    grants = [
+        _grant(
+            id=1,
+            rsu_type="public",
+            rsu_ticker="NASDAQ:TEAM",
+            rsu_shares_per_year=500,
+            rsu_share_price=100.0,
+            rsu_share_currency="USD",
+            rsu_amount=None,
+            rsu_currency=None,
+            rsu_aud=65000,
+            rsu_note="new-hire grant",
+        ),
+        _grant(
+            id=2,
+            rsu_type="public",
+            rsu_ticker="NASDAQ:TEAM",
+            rsu_shares_per_year=200,
+            rsu_share_price=100.0,
+            rsu_share_currency="USD",
+            rsu_amount=None,
+            rsu_currency=None,
+            rsu_aud=26000,
+            rsu_note="2024 top-up",
+        ),
+    ]
+    text = format_grants(grants)
+    assert text == (
+        "500 NASDAQ:TEAM sh/yr (~A$65k/yr) (new-hire grant) + "
+        "200 NASDAQ:TEAM sh/yr (~A$26k/yr) (2024 top-up)"
+    )
 
 
 def test_format_usd_base_with_public_rsu():
@@ -106,14 +156,18 @@ def test_format_usd_base_with_public_rsu():
         base_aud=437000,
         bonus_type="none",
         bonus_value=None,
-        rsu_type="public",
-        rsu_ticker="NASDAQ:TEAM",
-        rsu_shares_per_year=500,
-        rsu_share_price=86.88,
-        rsu_share_currency="USD",
-        rsu_amount=None,
-        rsu_currency=None,
-        rsu_aud=65000,
+        grants=[
+            _grant(
+                rsu_type="public",
+                rsu_ticker="NASDAQ:TEAM",
+                rsu_shares_per_year=500,
+                rsu_share_price=86.88,
+                rsu_share_currency="USD",
+                rsu_amount=None,
+                rsu_currency=None,
+                rsu_aud=65000,
+            )
+        ],
     )
     line = format_disclosure_line(_member(display_name="stitch"), d, au_super_pct=12.0)
     assert "USD 289k (~A$437k) base" in line

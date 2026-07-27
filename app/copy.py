@@ -111,11 +111,19 @@ PINNED_EMPTY = "_Crickets. Nobody's spilled yet._"
 PINNED_FOOTER_REBUILT = "_Last rebuilt {stamp}_"
 
 MODAL_INTRO = (
-    "Time to confess. For public equity, enter shares vesting *per year* "
-    "(not the full multi-year grant) plus a `MARKET:TICKER` — we price it "
-    "and convert to AUD. Private equity is a representative annual dollar value. "
-    "Non-AUD amounts convert via Wise."
+    "Time to confess. Non-AUD amounts convert via Wise; equity details are "
+    "below (scroll down — you can list multiple grants)."
 )
+
+def equity_section_intro(max_grants: int) -> str:
+    return (
+        f"*Equity / RSUs* — got topped up during a performance cycle? List each "
+        f"grant separately below (up to {max_grants}), new-hire grant included. "
+        f"For public equity, enter shares vesting *per year* for that grant "
+        f"(not the full multi-year grant) plus a `MARKET:TICKER` — we price it "
+        f"and convert to AUD. Private equity is a representative annual dollar "
+        f"value per grant."
+    )
 
 MODAL_TITLE = "Spill your TC"
 MODAL_SUBMIT = "Lock it in"

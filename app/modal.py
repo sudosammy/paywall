@@ -11,11 +11,16 @@ from __future__ import annotations
 from typing import Any
 
 from app import copy
-from app.db import Disclosure
+from app.db import Disclosure, Grant
 from app.fx import SUPPORTED_CURRENCIES, FxClient
 from app.stocks import SUPPORTED_MARKETS, StockClient, parse_ticker
 
 CALLBACK_ID = "salary_disclosure_modal"
+
+# Companies commonly top up RSU grants yearly during performance cycles, so a
+# member can have several concurrent grants (different tickers/quantities).
+# Modals can't repeat blocks dynamically, so we offer a fixed number of slots.
+MAX_GRANTS = 4
 
 
 def _currency_options() -> list[dict[str, Any]]:
@@ -46,12 +51,6 @@ def _initial_from_disclosure(disclosure: Disclosure | None) -> dict[str, Any]:
             "bonus_value": "",
             "bonus_currency": "AUD",
             "bonus_note": "",
-            "rsu_type": "none",
-            "rsu_ticker": "",
-            "rsu_shares_per_year": "",
-            "rsu_amount": "",
-            "rsu_currency": "AUD",
-            "rsu_note": "",
             "other_text": "",
         }
     return {
@@ -63,18 +62,48 @@ def _initial_from_disclosure(disclosure: Disclosure | None) -> dict[str, Any]:
         "bonus_value": _num(disclosure.bonus_value) if disclosure.bonus_value is not None else "",
         "bonus_currency": disclosure.bonus_currency or disclosure.base_currency,
         "bonus_note": disclosure.bonus_note or "",
-        "rsu_type": disclosure.rsu_type,
-        "rsu_ticker": disclosure.rsu_ticker or "",
-        "rsu_shares_per_year": (
-            _num(disclosure.rsu_shares_per_year)
-            if disclosure.rsu_shares_per_year is not None
-            else ""
-        ),
-        "rsu_amount": _num(disclosure.rsu_amount) if disclosure.rsu_amount is not None else "",
-        "rsu_currency": disclosure.rsu_currency or disclosure.base_currency,
-        "rsu_note": disclosure.rsu_note or "",
         "other_text": disclosure.other_text or "",
     }
+
+
+def _empty_grant_init(base_currency: str) -> dict[str, Any]:
+    return {
+        "rsu_type": "none",
+        "rsu_ticker": "",
+        "rsu_shares_per_year": "",
+        "rsu_amount": "",
+        "rsu_currency": base_currency,
+        "rsu_note": "",
+    }
+
+
+def _grant_init(grant: Grant, base_currency: str) -> dict[str, Any]:
+    return {
+        "rsu_type": grant.rsu_type,
+        "rsu_ticker": grant.rsu_ticker or "",
+        "rsu_shares_per_year": (
+            _num(grant.rsu_shares_per_year)
+            if grant.rsu_shares_per_year is not None
+            else ""
+        ),
+        "rsu_amount": _num(grant.rsu_amount) if grant.rsu_amount is not None else "",
+        "rsu_currency": grant.rsu_currency or base_currency,
+        "rsu_note": grant.rsu_note or "",
+    }
+
+
+def _grants_init(disclosure: Disclosure | None, base_currency: str) -> list[dict[str, Any]]:
+    existing = disclosure.grants if disclosure else []
+    return [
+        _grant_init(existing[i], base_currency)
+        if i < len(existing)
+        else _empty_grant_init(base_currency)
+        for i in range(MAX_GRANTS)
+    ]
+
+
+def _grant_block_id(index: int, field: str) -> str:
+    return f"grant{index}_{field}"
 
 
 def _num(value: float | None) -> str:
@@ -105,24 +134,110 @@ def _text_input(
     return element
 
 
+def _radio(options: list[tuple[str, str]], selected: str) -> dict:
+    opts = [
+        {
+            "text": {"type": "plain_text", "text": label},
+            "value": value,
+        }
+        for value, label in options
+    ]
+    initial = next(o for o in opts if o["value"] == selected)
+    return {
+        "type": "radio_buttons",
+        "action_id": "value",
+        "options": opts,
+        "initial_option": initial,
+    }
+
+
+def _grant_blocks(index: int, init: dict[str, Any]) -> list[dict[str, Any]]:
+    def bid(field: str) -> str:
+        return _grant_block_id(index, field)
+
+    return [
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": f"*Grant {index} of {MAX_GRANTS}*"}
+            ],
+        },
+        {
+            "type": "input",
+            "block_id": bid("rsu_type"),
+            "element": _radio(
+                [
+                    ("none", "None"),
+                    ("public", "Public company (listed)"),
+                    ("private", "Private company"),
+                ],
+                init["rsu_type"] if init["rsu_type"] in ("none", "public", "private") else "none",
+            ),
+            "label": {"type": "plain_text", "text": "Equity / RSUs"},
+        },
+        {
+            "type": "input",
+            "block_id": bid("rsu_ticker"),
+            "optional": True,
+            "element": _text_input(
+                placeholder="e.g. NASDAQ:TEAM or ASX:BHP",
+                initial=init["rsu_ticker"],
+            ),
+            "label": {"type": "plain_text", "text": "Ticker (if public)"},
+        },
+        {
+            "type": "input",
+            "block_id": bid("rsu_shares_per_year"),
+            "optional": True,
+            "element": _text_input(
+                placeholder="shares vesting per year, e.g. 500",
+                initial=init["rsu_shares_per_year"],
+            ),
+            "label": {"type": "plain_text", "text": "Shares per year (if public)"},
+        },
+        {
+            "type": "input",
+            "block_id": bid("rsu_amount"),
+            "optional": True,
+            "element": _text_input(
+                placeholder="e.g. 50000", initial=init["rsu_amount"]
+            ),
+            "label": {
+                "type": "plain_text",
+                "text": "Representative annual value (if private)",
+            },
+        },
+        {
+            "type": "input",
+            "block_id": bid("rsu_currency"),
+            "optional": True,
+            "element": {
+                "type": "static_select",
+                "action_id": "value",
+                "options": _currency_options(),
+                "initial_option": _selected_option(init["rsu_currency"]),
+            },
+            "label": {
+                "type": "plain_text",
+                "text": "Equity currency (if private)",
+            },
+        },
+        {
+            "type": "input",
+            "block_id": bid("rsu_note"),
+            "optional": True,
+            "element": _text_input(
+                placeholder="e.g. new-hire grant, 2024 top-up, cliff year...",
+                initial=init["rsu_note"],
+            ),
+            "label": {"type": "plain_text", "text": "Equity note"},
+        },
+    ]
+
+
 def build_disclosure_modal(disclosure: Disclosure | None = None) -> dict[str, Any]:
     init = _initial_from_disclosure(disclosure)
-
-    def radio(options: list[tuple[str, str]], selected: str) -> dict:
-        opts = [
-            {
-                "text": {"type": "plain_text", "text": label},
-                "value": value,
-            }
-            for value, label in options
-        ]
-        initial = next(o for o in opts if o["value"] == selected)
-        return {
-            "type": "radio_buttons",
-            "action_id": "value",
-            "options": opts,
-            "initial_option": initial,
-        }
+    grants_init = _grants_init(disclosure, init["base_currency"])
 
     blocks: list[dict[str, Any]] = [
         {
@@ -154,7 +269,7 @@ def build_disclosure_modal(disclosure: Disclosure | None = None) -> dict[str, An
         {
             "type": "input",
             "block_id": "super_type",
-            "element": radio(
+            "element": _radio(
                 [
                     ("on_top_legislated", "On top at AU legislated rate"),
                     ("included", "Included in base"),
@@ -175,7 +290,7 @@ def build_disclosure_modal(disclosure: Disclosure | None = None) -> dict[str, An
         {
             "type": "input",
             "block_id": "bonus_type",
-            "element": radio(
+            "element": _radio(
                 [
                     ("none", "None"),
                     ("pct_of_base", "% of base"),
@@ -217,76 +332,17 @@ def build_disclosure_modal(disclosure: Disclosure | None = None) -> dict[str, An
             ),
             "label": {"type": "plain_text", "text": "Bonus note"},
         },
+        {"type": "divider"},
         {
-            "type": "input",
-            "block_id": "rsu_type",
-            "element": radio(
-                [
-                    ("none", "None"),
-                    ("public", "Public company (listed)"),
-                    ("private", "Private company"),
-                ],
-                init["rsu_type"] if init["rsu_type"] in ("none", "public", "private") else "none",
-            ),
-            "label": {"type": "plain_text", "text": "Equity / RSUs"},
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": copy.equity_section_intro(MAX_GRANTS)},
         },
-        {
-            "type": "input",
-            "block_id": "rsu_ticker",
-            "optional": True,
-            "element": _text_input(
-                placeholder="e.g. NASDAQ:TEAM or ASX:BHP",
-                initial=init["rsu_ticker"],
-            ),
-            "label": {"type": "plain_text", "text": "Ticker (if public)"},
-        },
-        {
-            "type": "input",
-            "block_id": "rsu_shares_per_year",
-            "optional": True,
-            "element": _text_input(
-                placeholder="shares vesting per year, e.g. 500",
-                initial=init["rsu_shares_per_year"],
-            ),
-            "label": {"type": "plain_text", "text": "Shares per year (if public)"},
-        },
-        {
-            "type": "input",
-            "block_id": "rsu_amount",
-            "optional": True,
-            "element": _text_input(
-                placeholder="e.g. 50000", initial=init["rsu_amount"]
-            ),
-            "label": {
-                "type": "plain_text",
-                "text": "Representative annual value (if private)",
-            },
-        },
-        {
-            "type": "input",
-            "block_id": "rsu_currency",
-            "optional": True,
-            "element": {
-                "type": "static_select",
-                "action_id": "value",
-                "options": _currency_options(),
-                "initial_option": _selected_option(init["rsu_currency"]),
-            },
-            "label": {
-                "type": "plain_text",
-                "text": "Equity currency (if private)",
-            },
-        },
-        {
-            "type": "input",
-            "block_id": "rsu_note",
-            "optional": True,
-            "element": _text_input(
-                placeholder="e.g. cliff year, illiquid / funny money",
-                initial=init["rsu_note"],
-            ),
-            "label": {"type": "plain_text", "text": "Equity note"},
-        },
+    ]
+
+    for i in range(1, MAX_GRANTS + 1):
+        blocks.extend(_grant_blocks(i, grants_init[i - 1]))
+
+    blocks.append(
         {
             "type": "input",
             "block_id": "other_text",
@@ -297,8 +353,8 @@ def build_disclosure_modal(disclosure: Disclosure | None = None) -> dict[str, An
                 multiline=True,
             ),
             "label": {"type": "plain_text", "text": "Other"},
-        },
-    ]
+        }
+    )
 
     return {
         "type": "modal",
@@ -342,6 +398,100 @@ def _parse_number(raw: str, *, field: str, errors: dict[str, str]) -> float | No
         errors[field] = "Must be zero or positive"
         return None
     return value
+
+
+def _parse_grant_slot(
+    values: dict[str, Any],
+    index: int,
+    base_currency: str,
+    errors: dict[str, str],
+) -> dict[str, Any] | None:
+    """Validate one grant slot. Returns a grant dict, or None if the slot is
+    unused (rsu_type == 'none'), mirroring the mismatch checks used elsewhere
+    in this modal (filled fields under a 'None' selection are rejected)."""
+
+    def bid(field: str) -> str:
+        return _grant_block_id(index, field)
+
+    rsu_type = _get_select(values, bid("rsu_type")) or "none"
+    rsu_ticker_raw = _get_plain(values, bid("rsu_ticker"))
+    rsu_shares_raw = _get_plain(values, bid("rsu_shares_per_year"))
+    rsu_shares_per_year = _parse_number(
+        rsu_shares_raw, field=bid("rsu_shares_per_year"), errors=errors
+    )
+    rsu_amount_raw = _get_plain(values, bid("rsu_amount"))
+    rsu_amount = _parse_number(rsu_amount_raw, field=bid("rsu_amount"), errors=errors)
+    rsu_currency: str | None = (
+        _get_select(values, bid("rsu_currency")) or base_currency
+    ).upper()
+    rsu_note = _get_plain(values, bid("rsu_note")) or None
+
+    rsu_ticker: str | None = None
+    equity_mismatch = (
+        "You entered equity details but selected None — "
+        "pick Public/Private or clear this field."
+    )
+
+    if rsu_type == "none":
+        if rsu_ticker_raw:
+            errors[bid("rsu_ticker")] = equity_mismatch
+        if rsu_shares_raw:
+            errors[bid("rsu_shares_per_year")] = equity_mismatch
+        if rsu_amount_raw:
+            errors[bid("rsu_amount")] = equity_mismatch
+        return None
+    elif rsu_type == "public":
+        if rsu_amount_raw:
+            errors[bid("rsu_amount")] = (
+                "You entered a private equity amount but selected Public — "
+                "clear this field or switch to Private."
+            )
+        rsu_amount = None
+        rsu_currency = None
+        if not rsu_ticker_raw:
+            errors[bid("rsu_ticker")] = "Enter a ticker as MARKET:SYMBOL"
+        else:
+            parsed = parse_ticker(rsu_ticker_raw)
+            if not parsed:
+                markets = ", ".join(SUPPORTED_MARKETS)
+                errors[bid("rsu_ticker")] = f"Use MARKET:TICKER (supported: {markets})"
+            else:
+                market, symbol = parsed
+                rsu_ticker = f"{market}:{symbol}"
+        if rsu_shares_per_year is None and bid("rsu_shares_per_year") not in errors:
+            errors[bid("rsu_shares_per_year")] = "Enter shares vesting per year"
+        elif rsu_shares_per_year is not None and rsu_shares_per_year <= 0:
+            errors[bid("rsu_shares_per_year")] = "Must be greater than zero"
+    elif rsu_type == "private":
+        if rsu_ticker_raw:
+            errors[bid("rsu_ticker")] = (
+                "You entered a ticker but selected Private — "
+                "clear this field or switch to Public."
+            )
+        if rsu_shares_raw:
+            errors[bid("rsu_shares_per_year")] = (
+                "You entered shares but selected Private — "
+                "clear this field or switch to Public."
+            )
+        rsu_ticker = None
+        rsu_shares_per_year = None
+        if rsu_amount is None and bid("rsu_amount") not in errors:
+            errors[bid("rsu_amount")] = "Enter a representative annual equity value"
+        elif rsu_amount is not None and rsu_amount <= 0:
+            errors[bid("rsu_amount")] = "Must be greater than zero"
+        if rsu_currency and rsu_currency not in SUPPORTED_CURRENCIES:
+            errors[bid("rsu_currency")] = "Unsupported currency"
+    else:
+        errors[bid("rsu_type")] = "Pick none, public, or private"
+
+    return {
+        "rsu_type": rsu_type,
+        "rsu_ticker": rsu_ticker,
+        "rsu_shares_per_year": rsu_shares_per_year,
+        "rsu_amount": rsu_amount,
+        "rsu_currency": rsu_currency,
+        "rsu_note": rsu_note,
+    }
 
 
 def parse_submission(
@@ -402,81 +552,11 @@ def parse_submission(
         if bonus_value is not None and bonus_value > 200:
             errors["bonus_value"] = "Bonus % looks too high"
 
-    rsu_type = _get_select(values, "rsu_type") or "none"
-    rsu_ticker_raw = _get_plain(values, "rsu_ticker")
-    rsu_shares_raw = _get_plain(values, "rsu_shares_per_year")
-    rsu_shares_per_year = _parse_number(
-        rsu_shares_raw, field="rsu_shares_per_year", errors=errors
-    )
-    rsu_amount_raw = _get_plain(values, "rsu_amount")
-    rsu_amount = _parse_number(rsu_amount_raw, field="rsu_amount", errors=errors)
-    rsu_currency: str | None = (
-        _get_select(values, "rsu_currency") or base_currency
-    ).upper()
-    rsu_note = _get_plain(values, "rsu_note") or None
-
-    rsu_ticker: str | None = None
-    equity_mismatch = (
-        "You entered equity details but selected None — "
-        "pick Public/Private or clear this field."
-    )
-
-    if rsu_type == "none":
-        if rsu_ticker_raw:
-            errors["rsu_ticker"] = equity_mismatch
-        if rsu_shares_raw:
-            errors["rsu_shares_per_year"] = equity_mismatch
-        if rsu_amount_raw:
-            errors["rsu_amount"] = equity_mismatch
-        rsu_ticker = None
-        rsu_shares_per_year = None
-        rsu_amount = None
-        rsu_currency = None
-    elif rsu_type == "public":
-        if rsu_amount_raw:
-            errors["rsu_amount"] = (
-                "You entered a private equity amount but selected Public — "
-                "clear this field or switch to Private."
-            )
-        rsu_amount = None
-        rsu_currency = None
-        if not rsu_ticker_raw:
-            errors["rsu_ticker"] = "Enter a ticker as MARKET:SYMBOL"
-        else:
-            parsed = parse_ticker(rsu_ticker_raw)
-            if not parsed:
-                markets = ", ".join(SUPPORTED_MARKETS)
-                errors["rsu_ticker"] = (
-                    f"Use MARKET:TICKER (supported: {markets})"
-                )
-            else:
-                market, symbol = parsed
-                rsu_ticker = f"{market}:{symbol}"
-        if rsu_shares_per_year is None and "rsu_shares_per_year" not in errors:
-            errors["rsu_shares_per_year"] = "Enter shares vesting per year"
-        elif rsu_shares_per_year is not None and rsu_shares_per_year <= 0:
-            errors["rsu_shares_per_year"] = "Must be greater than zero"
-    elif rsu_type == "private":
-        if rsu_ticker_raw:
-            errors["rsu_ticker"] = (
-                "You entered a ticker but selected Private — "
-                "clear this field or switch to Public."
-            )
-        if rsu_shares_raw:
-            errors["rsu_shares_per_year"] = (
-                "You entered shares but selected Private — "
-                "clear this field or switch to Public."
-            )
-        rsu_ticker = None
-        rsu_shares_per_year = None
-        if rsu_amount is None and "rsu_amount" not in errors:
-            errors["rsu_amount"] = "Enter a representative annual equity value"
-        elif rsu_amount is not None and rsu_amount <= 0:
-            errors["rsu_amount"] = "Must be greater than zero"
-        if rsu_currency and rsu_currency not in SUPPORTED_CURRENCIES:
-            errors["rsu_currency"] = "Unsupported currency"
-    else:
-        errors["rsu_type"] = "Pick none, public, or private"
+    grants: list[dict[str, Any]] = []
+    for i in range(1, MAX_GRANTS + 1):
+        grant = _parse_grant_slot(values, i, base_currency, errors)
+        if grant is not None:
+            grants.append(grant)
 
     other_text = _get_plain(values, "other_text") or None
 
@@ -492,12 +572,7 @@ def parse_submission(
         "bonus_value": bonus_value,
         "bonus_currency": bonus_currency,
         "bonus_note": bonus_note,
-        "rsu_type": rsu_type,
-        "rsu_ticker": rsu_ticker,
-        "rsu_shares_per_year": rsu_shares_per_year,
-        "rsu_amount": rsu_amount,
-        "rsu_currency": rsu_currency,
-        "rsu_note": rsu_note,
+        "grants": grants,
         "other_text": other_text,
     }
     return data, {}
@@ -506,15 +581,12 @@ def parse_submission(
 def apply_fx(
     data: dict[str, Any], fx: FxClient, stocks: StockClient
 ) -> dict[str, Any]:
-    """Add AUD snapshot fields (and public share-price snapshot) to parsed data.
+    """Add AUD snapshot fields (and public share-price snapshots) to parsed data.
 
     Raises on conversion / price-lookup failure (no cached value and API down).
     """
     base_conv = fx.convert_to_aud(data["base_amount"], data["base_currency"])
     bonus_aud = None
-    rsu_aud = None
-    rsu_share_price = None
-    rsu_share_currency = None
     rate_dates = [base_conv.rate_date]
 
     if data["bonus_type"] == "fixed_amount" and data["bonus_value"] is not None:
@@ -524,28 +596,36 @@ def apply_fx(
     elif data["bonus_type"] == "pct_of_base" and data["bonus_value"] is not None:
         bonus_aud = round(base_conv.amount_aud * (data["bonus_value"] / 100.0), 2)
 
-    if data["rsu_type"] == "public":
-        quote = stocks.get_price(data["rsu_ticker"])
-        annual_value = data["rsu_shares_per_year"] * quote.price
-        rsu_conv = fx.convert_to_aud(annual_value, quote.currency)
-        rsu_aud = rsu_conv.amount_aud
-        rsu_share_price = quote.price
-        rsu_share_currency = quote.currency
-        rate_dates.append(rsu_conv.rate_date)
-        rate_dates.append(quote.price_date)
-    elif data["rsu_type"] == "private" and data["rsu_amount"] is not None:
-        rsu_conv = fx.convert_to_aud(data["rsu_amount"], data["rsu_currency"])
-        rsu_aud = rsu_conv.amount_aud
-        rate_dates.append(rsu_conv.rate_date)
+    grants: list[dict[str, Any]] = []
+    for grant in data.get("grants") or []:
+        enriched = dict(grant)
+        if grant["rsu_type"] == "public":
+            quote = stocks.get_price(grant["rsu_ticker"])
+            annual_value = grant["rsu_shares_per_year"] * quote.price
+            rsu_conv = fx.convert_to_aud(annual_value, quote.currency)
+            enriched["rsu_aud"] = rsu_conv.amount_aud
+            enriched["rsu_share_price"] = quote.price
+            enriched["rsu_share_currency"] = quote.currency
+            rate_dates.append(rsu_conv.rate_date)
+            rate_dates.append(quote.price_date)
+        elif grant["rsu_type"] == "private" and grant["rsu_amount"] is not None:
+            rsu_conv = fx.convert_to_aud(grant["rsu_amount"], grant["rsu_currency"])
+            enriched["rsu_aud"] = rsu_conv.amount_aud
+            enriched["rsu_share_price"] = None
+            enriched["rsu_share_currency"] = None
+            rate_dates.append(rsu_conv.rate_date)
+        else:
+            enriched["rsu_aud"] = None
+            enriched["rsu_share_price"] = None
+            enriched["rsu_share_currency"] = None
+        grants.append(enriched)
 
     result = dict(data)
     result.update(
         {
             "base_aud": base_conv.amount_aud,
             "bonus_aud": bonus_aud,
-            "rsu_aud": rsu_aud,
-            "rsu_share_price": rsu_share_price,
-            "rsu_share_currency": rsu_share_currency,
+            "grants": grants,
             "fx_rate_date": max(rate_dates),
         }
     )
