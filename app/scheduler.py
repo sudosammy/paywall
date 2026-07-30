@@ -12,7 +12,10 @@ from app import copy
 from app.compliance import should_eject, should_nag
 from app.config import Config
 from app.db import Database
+from app.fx import FxClient
 from app.pinned import rebuild_pinned_message
+from app.revalue import revalue_active_disclosures
+from app.stocks import StockClient
 from app.sync import sync_channel_members
 
 logger = logging.getLogger(__name__)
@@ -22,6 +25,9 @@ def start_scheduler(
     client: Any,
     db: Database,
     config: Config,
+    *,
+    fx: FxClient | None = None,
+    stocks: StockClient | None = None,
 ) -> BackgroundScheduler:
     scheduler = BackgroundScheduler(timezone="UTC")
     scheduler.add_job(
@@ -30,6 +36,7 @@ def start_scheduler(
         hour=1,
         minute=0,
         args=[client, db, config],
+        kwargs={"fx": fx, "stocks": stocks},
         id="compliance",
         replace_existing=True,
         max_instances=1,
@@ -41,7 +48,13 @@ def start_scheduler(
 
 
 def run_compliance_job(
-    client: Any, db: Database, config: Config, *, sync: bool = True
+    client: Any,
+    db: Database,
+    config: Config,
+    *,
+    sync: bool = True,
+    fx: FxClient | None = None,
+    stocks: StockClient | None = None,
 ) -> None:
     logger.info("Running compliance job")
     if sync:
@@ -49,6 +62,11 @@ def run_compliance_job(
             sync_channel_members(client, db, config)
         except Exception:
             logger.exception("Membership sync failed")
+
+    try:
+        revalue_active_disclosures(db, fx or FxClient(db), stocks or StockClient(db))
+    except Exception:
+        logger.exception("Failed to revalue active disclosures")
 
     try:
         rebuild_pinned_message(client, db, config)

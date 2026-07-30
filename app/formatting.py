@@ -193,7 +193,11 @@ def build_pinned_message(
         body = copy.PINNED_EMPTY
         channel_value = ""
     else:
-        ordered = sorted(rows, key=lambda pair: pair[1].base_aud, reverse=True)
+        ordered = sorted(
+            rows,
+            key=lambda pair: total_comp_aud(pair[1], au_super_pct),
+            reverse=True,
+        )
         body = "\n\n".join(
             format_disclosure_line(m, d, au_super_pct=au_super_pct) for m, d in ordered
         )

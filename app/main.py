@@ -47,6 +47,8 @@ def create_app() -> App:
 
     app._salary_config = config  # type: ignore[attr-defined]
     app._salary_db = db  # type: ignore[attr-defined]
+    app._salary_fx = fx  # type: ignore[attr-defined]
+    app._salary_stocks = stocks  # type: ignore[attr-defined]
     return app
 
 
@@ -55,8 +57,11 @@ def main() -> None:
     config = app._salary_config  # type: ignore[attr-defined]
     db = app._salary_db  # type: ignore[attr-defined]
 
+    fx = app._salary_fx  # type: ignore[attr-defined]
+    stocks = app._salary_stocks  # type: ignore[attr-defined]
+
     handler = SocketModeHandler(app, config.slack_app_token)
-    scheduler = start_scheduler(app.client, db, config)
+    scheduler = start_scheduler(app.client, db, config, fx=fx, stocks=stocks)
 
     def shutdown(*_args):
         logger.info("Shutting down")
@@ -84,7 +89,7 @@ def main() -> None:
         except Exception:
             logger.exception("Failed to initialise pinned summary")
         try:
-            run_compliance_job(app.client, db, config, sync=False)
+            run_compliance_job(app.client, db, config, sync=False, fx=fx, stocks=stocks)
         except Exception:
             logger.exception("Startup compliance job failed")
 

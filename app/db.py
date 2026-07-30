@@ -474,6 +474,45 @@ class Database:
         assert disclosure is not None
         return disclosure
 
+    def update_disclosure_valuation(
+        self,
+        disclosure_id: int,
+        *,
+        base_aud: float,
+        bonus_aud: float | None,
+        fx_rate_date: str | None,
+    ) -> None:
+        """Refresh only the computed AUD/FX fields on an existing disclosure —
+        used by the daily revaluation job, which must not touch created_at,
+        fy_period, or any other user-entered field."""
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE disclosures
+                SET base_aud = ?, bonus_aud = ?, fx_rate_date = ?
+                WHERE id = ?
+                """,
+                (base_aud, bonus_aud, fx_rate_date, disclosure_id),
+            )
+
+    def update_grant_valuation(
+        self,
+        grant_id: int,
+        *,
+        rsu_aud: float | None,
+        rsu_share_price: float | None,
+        rsu_share_currency: str | None,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE grants
+                SET rsu_aud = ?, rsu_share_price = ?, rsu_share_currency = ?
+                WHERE id = ?
+                """,
+                (rsu_aud, rsu_share_price, rsu_share_currency, grant_id),
+            )
+
     def get_disclosure(self, disclosure_id: int) -> Disclosure | None:
         with self.connect() as conn:
             row = conn.execute(
