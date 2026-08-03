@@ -29,20 +29,46 @@ NOT_A_MEMBER = (
 )
 
 
-def join_reminder(grace_days: int) -> str:
+def _days_left(deadline: datetime, *, now: datetime | None = None) -> int:
+    now = now or datetime.now(timezone.utc)
+    return max(0, -(-(deadline - now) // timedelta(days=1)))  # ceil division
+
+
+def join_reminder(deadline: datetime, *, now: datetime | None = None) -> str:
+    now = now or datetime.now(timezone.utc)
+    days_left = _days_left(deadline, now=now)
+    if days_left <= 0:
+        return (
+            f"Hey. Still waiting on your numbers. Your deadline "
+            f"({deadline.date().isoformat()}) has passed — drop your numbers "
+            f"now or Paywall shows you the door. Don't make me the bad guy. "
+            f"(I will be the bad guy.)"
+        )
+    day_word = "day" if days_left == 1 else "days"
     return (
-        f"Hey. Still waiting on your numbers. You've got *{grace_days} days* "
-        f"from joining to disclose, or Paywall shows you the door. "
-        f"Don't make me the bad guy. (I will be the bad guy.)"
+        f"Hey. Still waiting on your numbers. You've got *{days_left} {day_word} "
+        f"left* — disclose by {deadline.date().isoformat()} or Paywall shows you "
+        f"the door. Don't make me the bad guy. (I will be the bad guy.)"
     )
 
 
-def revalidate_reminder(revalidate_days: int, grace_days: int) -> str:
+def revalidate_reminder(
+    due: datetime, eject_deadline: datetime, *, now: datetime | None = None
+) -> str:
+    now = now or datetime.now(timezone.utc)
+    days_left = _days_left(eject_deadline, now=now)
+    if days_left <= 0:
+        return (
+            f"Your disclosure's been overdue since {due.date().isoformat()} and "
+            f"you're past the grace deadline ({eject_deadline.date().isoformat()}). "
+            f"Hit *Still that, yeah* or update now — Paywall's about to show you out."
+        )
+    day_word = "day" if days_left == 1 else "days"
     return (
-        f"Your disclosure is getting dusty we re-check every "
-        f"*{revalidate_days} days*. Hit *Still that, yeah* if nothing's changed, "
-        f"or update if you've leveled up / been shafted. "
-        f"Ghost for *{grace_days} days* and you're gone."
+        f"Your disclosure's been overdue since {due.date().isoformat()}. "
+        f"You've got *{days_left} {day_word} left* — hit *Still that, yeah* if "
+        f"nothing's changed, or update if you've leveled up / been shafted. "
+        f"Ghost past {eject_deadline.date().isoformat()} and you're gone."
     )
 
 

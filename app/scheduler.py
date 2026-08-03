@@ -9,7 +9,13 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from slack_sdk.errors import SlackApiError
 
 from app import copy
-from app.compliance import should_eject, should_nag
+from app.compliance import (
+    disclosure_due_at,
+    eject_deadline,
+    initial_deadline,
+    should_eject,
+    should_nag,
+)
 from app.config import Config
 from app.db import Database
 from app.fx import FxClient
@@ -90,7 +96,7 @@ def _send_reminder(client: Any, db: Database, config: Config, user_id: str) -> N
         return
 
     if not member.last_validated_at:
-        text = copy.join_reminder(config.grace_days)
+        text = copy.join_reminder(initial_deadline(member, config))
         blocks = [
             {
                 "type": "section",
@@ -109,7 +115,9 @@ def _send_reminder(client: Any, db: Database, config: Config, user_id: str) -> N
             },
         ]
     else:
-        text = copy.revalidate_reminder(config.revalidate_days, config.grace_days)
+        due = disclosure_due_at(member, config)
+        assert due is not None
+        text = copy.revalidate_reminder(due, eject_deadline(member, config))
         blocks = [
             {
                 "type": "section",
